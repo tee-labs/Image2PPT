@@ -6,7 +6,9 @@
 
 [中文](README.md) | English
 
-DeckWeaver is the display name for the Image2PPT project. It reconstructs slide screenshots, exported slide images, or visual slide drafts into editable PowerPoint decks. It keeps ordinary text as real PPT text boxes, extracts icons/logos/photos as independent picture objects, and rebuilds simple cards, lines, and rounded rectangles as native shapes where possible.
+DeckWeaver reconstructs slide screenshots, exported slide images, or visual slide drafts into editable PowerPoint decks. It keeps ordinary text as real PPT text boxes, extracts icons/logos/photos as independent picture objects, and rebuilds simple cards, lines, and rounded rectangles as native shapes where possible.
+
+The repository name remains Image2PPT so the project is easy to find and understand at a glance.
 
 Use it when you only have images. If you already have the native `.pptx`, edit that file directly.
 
