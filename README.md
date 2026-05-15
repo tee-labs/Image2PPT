@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/logo.png" alt="DeckWeaver logo" width="220">
+  <img src="assets/logo.png" alt="DeckWeaver logo" width="420">
 </p>
 
 # DeckWeaver
