@@ -1,9 +1,9 @@
-# Optional Codex agent metadata.
+# Optional Codex/OpenAI agent metadata.
 #
-# Image2PPT/DeckWeaver is a generic local skill. The runtime entry points
-# are SKILL.md and the scripts/ directory; this YAML only helps Codex-like
-# agent UIs show a friendly name, description, default prompt, and
-# dependency hints.
+# DeckWeaver is a generic local skill. The runtime entry points are
+# AGENTS.md, CLAUDE.md, SKILL.md, and the scripts/ directory. This YAML
+# only helps Codex/OpenAI-style agent UIs show a friendly name,
+# description, default prompt, and dependency hints.
 interface:
   display_name: "DeckWeaver"
   short_description: "Reconstruct slide screenshots as editable PowerPoint decks with PaddleOCR + cv2."

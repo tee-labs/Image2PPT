@@ -123,8 +123,10 @@ python scripts/build_deck.py --icon-review ...
 │   ├── tables/       # 可选表格识别
 │   └── optional/     # 可选后处理工具
 ├── references/       # 布局格式与流程说明
-├── agents/codex.yaml # 可选 Codex agent 展示元数据
-├── SKILL.md          # 作为 Codex skill 使用时的流程说明
+├── AGENTS.md         # Codex / 通用 coding agent 使用说明
+├── CLAUDE.md         # Claude Code 使用说明
+├── agents/codex.yaml # 可选 Codex/OpenAI agent 展示元数据
+├── SKILL.md          # skill 工作流说明
 └── requirements.txt
 ```
 

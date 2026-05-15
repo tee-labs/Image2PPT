@@ -49,6 +49,12 @@ python scripts/build_deck.py --source-dir "$SRC" --work-dir "$RUN"
 
 The final deck is written to `output_project/<run>/slides.pptx`. QA output, preview renders, OCR data, extracted assets, and layout JSON files are stored in the same run directory.
 
+## Agent Support
+
+- `AGENTS.md`: guide for Codex and general coding agents.
+- `CLAUDE.md`: guide for Claude Code.
+- `agents/codex.yaml`: optional Codex/OpenAI-style UI metadata.
+
 ## Contact
 
 Commercial licensing, customization, or feedback: 1015277323@qq.com
