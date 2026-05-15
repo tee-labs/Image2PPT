@@ -1,0 +1,29 @@
+# Optional Codex agent metadata.
+#
+# Image2PPT/DeckWeaver is a generic local skill. The runtime entry points
+# are SKILL.md and the scripts/ directory; this YAML only helps Codex-like
+# agent UIs show a friendly name, description, default prompt, and
+# dependency hints.
+interface:
+  display_name: "DeckWeaver"
+  short_description: "Reconstruct slide screenshots as editable PowerPoint decks with PaddleOCR + cv2."
+  default_prompt: "Use $ppt-image-to-editable-ppt to turn these page_NN slide images into an editable PPTX deck. Place the run under output_project/<source-dir-name>_<YYYYMMDD_HHMMSS>/."
+
+requirements:
+  python:
+    - python-pptx
+    - pillow
+    - numpy
+    - opencv-python
+    - "paddleocr>=3"
+    - "paddlex[ocr]"
+    - easyocr
+    - pytesseract
+    - onnxruntime            # RMBG (optional)
+    - huggingface_hub        # RMBG weight download (optional)
+  external:
+    - libreoffice            # PPTX→PDF for render_preview.py
+    - poppler                # provides pdftoppm
+    - tesseract              # OCR cross-check
+  models:
+    - briaai/RMBG-1.4        # 88 MB ONNX, optional, fetched via huggingface_hub

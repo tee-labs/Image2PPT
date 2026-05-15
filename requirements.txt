@@ -1,0 +1,10 @@
+python-pptx
+pillow
+numpy
+opencv-python
+paddleocr>=3
+paddlex[ocr]
+easyocr
+pytesseract
+onnxruntime
+huggingface_hub

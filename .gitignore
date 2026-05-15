@@ -1,0 +1,27 @@
+# Per-deck artifacts (regenerable from source images via the skill scripts).
+# Skill is the source of truth; outputs live under output_project/<run>/ and
+# should never be committed.
+output_project/
+work/                       # legacy run dir name, kept ignored just in case
+
+# OCR artifacts produced during a run
+*.ocr.raw.json              # raw OCR before review (kept as ocr.raw.json next to ocr.json)
+*.ocr.corrected.json        # legacy corrected-OCR filename (apply now writes in place)
+
+# Model weights — downloaded on first use, too big to commit
+FastSAM-s.pt
+*.pt
+*.onnx
+
+# Build / cache
+__pycache__/
+*.pyc
+.DS_Store
+*.pdf
+.claude/
+
+# Local generated runs and scratch source folders
+ppt_prompts_*_copy/
+ppt_prompts_*_副本/
+slides_private/
+scratch/
