@@ -1,11 +1,15 @@
 DeckWeaver (Image2PPT) Personal Use License
 
 Copyright (c) 2026 DeckWeaver / Image2PPT Authors
+Source: https://github.com/GuopengLin/Image2PPT
 
 1. Personal Use
 
 You may use, copy, and modify this software free of charge for personal,
-non-commercial, educational, research, or evaluation purposes.
+non-commercial, educational, research, or evaluation purposes, provided
+that every copy or modified version clearly attributes DeckWeaver /
+Image2PPT as the source and keeps this license, copyright notices, and
+the original project source link.
 
 2. Commercial Use
 
@@ -21,13 +25,22 @@ but is not limited to:
 
 To request a commercial license, contact: 1015277323@qq.com
 
-3. Redistribution
+3. Attribution and Redistribution
 
-Redistribution for personal or non-commercial purposes must keep this
-license file and all copyright notices. You may not remove or alter the
-license terms.
+All copies and modified versions, including personal or non-commercial
+copies, must keep this license file, all copyright notices, source
+attribution to DeckWeaver / Image2PPT, and the original project source
+link. You may not remove or alter the license terms. Redistributed
+modified versions must state that they were modified from the original
+project.
 
-4. No Warranty
+4. Third-Party Notices
+
+This software includes or adapts portions of third-party open-source
+software. Third-party notices and license terms are provided in
+THIRD_PARTY_NOTICES.md and must be preserved where applicable.
+
+5. No Warranty
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
@@ -39,6 +52,7 @@ DEALINGS IN THE SOFTWARE.
 
 中文摘要：
 
-- 个人、非商业、教育、研究、评估用途可以免费使用、复制和修改。
-- 商业使用、商业分发、SaaS 集成、公司内部生产环境使用、付费项目交付等场景，必须先联系 1015277323@qq.com 获取付费商业授权。
+- 个人、非商业、教育、研究、评估用途可以免费使用、复制和修改，但任何副本或修改版都必须注明来源：保留 DeckWeaver / Image2PPT 项目名、版权声明、许可证和原始仓库链接。
+- 商业使用、商业分发、SaaS 集成、公司内部生产环境使用、付费项目交付等场景，请先联系 1015277323@qq.com 获取付费商业授权。
+- 本项目包含或改编了部分第三方开源内容，相关声明见 THIRD_PARTY_NOTICES.md，并应按其中要求保留。
 - 本软件按“原样”提供，不提供任何明示或暗示担保。

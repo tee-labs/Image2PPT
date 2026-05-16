@@ -22,7 +22,6 @@ DeckWeaver 可以把 GPT、Gemini等输出的图片重建为可编辑的 PowerPo
 
 ### 方式一：作为 Skill / Agent 工具使用
 
-适合已经在使用 Codex、Claude Code 或其他本地 coding agent 的用户。
 
 1. 克隆项目，或者直接克隆到你的 skill 目录：
 
@@ -45,13 +44,7 @@ git clone https://github.com/GuopengLin/Image2PPT.git
 请使用这个项目里的 skill，把 /path/to/page_01.png 转换成可编辑 PPT。
 ```
 
-首次运行时，agent 会先执行 `bash scripts/bootstrap.sh` 安装依赖，可能需要一定的耗时。之后它会运行一键转换命令：
-
-```bash
-python scripts/convert.py --source /path/to_dir
-```
-
-它会自动生成 OCR、布局、PPTX 和预览文件，最终结果在 `output_project/<run>/slides.pptx`。
+**注意** 首次运行时，agent 会先执行 `bash scripts/bootstrap.sh` 安装依赖，可能需要一定的耗时。最终结果在 `output_project/<run>/slides.pptx`。
 
 ### 方式二：作为独立命令行工具使用
 
@@ -71,20 +64,11 @@ bash scripts/bootstrap.sh
 
 `bootstrap.sh` 会安装 Python 依赖、本地 OCR 依赖、LibreOffice/Poppler 预览工具，并预下载模型缓存。macOS 和常见 Linux 发行版可直接使用；Windows 或受管环境可参考 `requirements.txt` 手动安装依赖。
 
-准备一个源图片目录，文件名按页码命名：
-
-```text
-slides/
-├── page_01.png
-├── page_02.jpg
-├── page_03.webp
-└── page_04.tiff
-```
 
 然后一键运行：
 
 ```bash
-python scripts/convert.py --source slides
+python scripts/convert.py --source /path/to/slides
 ```
 
 也可以直接处理单张图片：
@@ -167,10 +151,14 @@ python scripts/build_deck.py --icon-review ...
 - 复杂图表目前会优先作为可移动图片对象保留，而不是还原为可编辑数据图表。
 - 生成文件默认写入 `output_project/`，该目录不会提交到 Git。
 
+## 致谢与第三方声明
+
+本项目的部分 PPTX 布局构建、布局格式说明、重建流程说明和 PPTX 检查工具参考并改编自 [soulmujoco/EditableImage2PPTSkill](https://github.com/soulmujoco/EditableImage2PPTSkill)。原项目使用 MIT License，详见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
 ## 联系方式
 
 商业授权、定制开发或问题反馈：1015277323@qq.com
 
 ## License
 
-个人免费使用。商业使用、商业分发、SaaS/内部生产系统集成等场景需要先联系作者购买商业授权。详见 [LICENSE](LICENSE)。
+个人免费使用、复制和修改，但副本或修改版需要注明来源并保留项目名、版权声明、许可证和原始仓库链接。商业使用、商业分发、SaaS/内部生产系统集成等场景需要先联系作者购买商业授权。详见 [LICENSE](LICENSE)。
