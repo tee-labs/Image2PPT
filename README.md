@@ -6,6 +6,14 @@
 
 中文 | [English](README_EN.md)
 
+<p align="center">
+  <img alt="Python" src="https://img.shields.io/badge/Python-3.x-3776AB?style=flat-square&logo=python&logoColor=white">
+  <img alt="PowerPoint" src="https://img.shields.io/badge/Output-PPTX-D24726?style=flat-square&logo=microsoftpowerpoint&logoColor=white">
+  <img alt="Local OCR" src="https://img.shields.io/badge/OCR-Local-16a34a?style=flat-square">
+  <img alt="No cloud API" src="https://img.shields.io/badge/Cloud%20API-Not%20required-0ea5e9?style=flat-square">
+  <img alt="Bitmap formats" src="https://img.shields.io/badge/Bitmap-PNG%20%7C%20JPG%20%7C%20WebP%20%7C%20TIFF-f59e0b?style=flat-square">
+</p>
+
 DeckWeaver 可以把 GPT、Gemini等输出的图片重建为可编辑的 PowerPoint 文件。它可以作为Agent的Skill使用，或者直接作为一个无大模型介入的命令行工具。
 
 几乎所有的图片上的文字都会被还原成可编辑的 PPT 文本框，图标、Logo、图片和装饰元素等也会拆成独立图片对象。
@@ -17,14 +25,6 @@ DeckWeaver 可以把 GPT、Gemini等输出的图片重建为可编辑的 PowerPo
 - 生成速度快：批量 OCR 复用热模型，后续页面流水线自动完成。
 - 无需额外云端 API：OCR、图像分割、PPTX 生成和预览检查都在本地运行。
 - 支持常见位图输入：PNG、JPG/JPEG、WebP、BMP、TIF/TIFF。
-
-## 效果展示
-
-<p align="center">
-  <img src="assets/showcase/sample-comparison.png" alt="DeckWeaver sample result">
-</p>
-
-示例输入图片在 [examples/demo_source/page_01.png](examples/demo_source/page_01.png)，生成的可编辑 PPT 在 [examples/demo_output/deckweaver-demo.pptx](examples/demo_output/deckweaver-demo.pptx)。
 
 ## 快速开始
 
@@ -137,14 +137,9 @@ python scripts/build_deck.py --icon-review ...
 
 ## 项目结构
 
-<p align="center">
-  <img src="assets/showcase/project-structure.png" alt="DeckWeaver project structure">
-</p>
-
 ```text
 .
-├── assets/            # Logo 与展示图片
-├── examples/          # 示例输入图片与生成的 PPTX
+├── assets/            # Logo 等项目资源
 ├── scripts/
 │   ├── convert.py    # 一键转换入口
 │   ├── ocr/          # OCR、交叉验证、复核应用
