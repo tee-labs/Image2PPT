@@ -61,12 +61,19 @@ slides/
 └── page_03.webp
 ```
 
-Run:
+Run the one-command pipeline:
 
 ```bash
 RUN="output_project/demo_$(date +%Y%m%d_%H%M%S)"
 SRC="slides"
 
+python scripts/convert.py --source "$SRC" --work-dir "$RUN"
+```
+
+For debugging, the same flow can be split into the three lower-level
+steps:
+
+```bash
 python scripts/ocr/prepare_ocr.py \
   --source-dir "$SRC" \
   --work-dir "$RUN"
@@ -78,7 +85,9 @@ python scripts/build_deck.py \
   --work-dir "$RUN"
 ```
 
-`prepare_ocr.py` loads PaddleOCR once, runs OCR across all pages, builds
+`convert.py` creates or uses a run directory, normalizes single-image or
+non-`page_NN` sources when needed, then calls the three lower-level
+steps. `prepare_ocr.py` loads PaddleOCR once, runs OCR across all pages, builds
 review packets for uncertain entries, and pre-fills `corrected_text`
 with local consensus picks. `ocr_review_apply.py` merges those picks into
 the OCR JSON files. `build_deck.py` runs erase, inventory extraction,
@@ -107,6 +116,8 @@ python scripts/build_deck.py --source-dir "$SRC" --work-dir "$RUN"
 - `--detect-tables`: enable optional native table reconstruction.
 - `--icon-review`: emit icon-vs-text review packets.
 - `--icon-decisions`: apply filled icon review decisions on a rerun.
+
+These flags can be passed to `scripts/convert.py`.
 
 ## Validation Standard
 

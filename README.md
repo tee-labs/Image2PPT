@@ -6,11 +6,7 @@
 
 中文 | [English](README_EN.md)
 
-DeckWeaver 可以把 PPT 截图、导出的页面图片或演示稿设计稿重建为可编辑的 PowerPoint 文件。它会尽量把普通文字还原成真正的 PPT 文本框，把图标、Logo、图片和装饰元素拆成独立图片对象，把简单卡片、线条、圆角框等转成原生形状。
-
-仓库名保留为 Image2PPT，方便搜索和理解项目用途。
-
-它适合你只有图片、没有原始 `.pptx` 的场景。如果你已经有原始 PPT，请优先直接编辑原文件。
+DeckWeaver 可以把 GPT、Gemini等输出的图片重建为可编辑的 PowerPoint 文件。它会尽量把普通文字还原成真正的 PPT 文本框，把图标、Logo、图片和装饰元素拆成独立图片对象。
 
 ## 优点
 
@@ -56,7 +52,13 @@ git clone https://github.com/GuopengLin/Image2PPT.git ~/.codex/skills/deckweaver
 请使用这个项目里的 skill，把 /path/to/page_01.png 转换成可编辑 PPT。
 ```
 
-首次运行时，让 agent 先执行 `bash scripts/bootstrap.sh` 安装依赖。之后它会按流程生成 OCR、布局、PPTX 和预览文件，最终结果在 `output_project/<run>/slides.pptx`。
+首次运行时，让 agent 先执行 `bash scripts/bootstrap.sh` 安装依赖。之后让它运行：
+
+```bash
+python scripts/convert.py --source slides
+```
+
+它会自动生成 OCR、布局、PPTX 和预览文件，最终结果在 `output_project/<run>/slides.pptx`。
 
 ### 方式二：作为独立命令行工具使用
 
@@ -80,7 +82,32 @@ slides/
 └── page_04.tiff
 ```
 
-然后运行三步：
+然后一键运行：
+
+```bash
+python scripts/convert.py --source slides
+```
+
+也可以处理单张图片：
+
+```bash
+python scripts/convert.py --source /path/to/page_01.png
+```
+
+生成结果会在：
+
+```text
+output_project/<run>/
+├── slides.pptx       # 最终可编辑 PPT
+├── qa.json           # PPTX 结构检查报告
+├── previews/         # 预览图，用于人工比对
+├── ocr/              # OCR 与可选人工复核文件
+├── layouts/          # 页面布局 JSON
+├── assets/           # 提取出的图片对象
+└── debug/            # 调试可视化
+```
+
+如果需要调试，也可以把一键流程拆成三步手动运行：
 
 ```bash
 RUN="output_project/demo_$(date +%Y%m%d_%H%M%S)"
@@ -97,24 +124,15 @@ python scripts/build_deck.py \
   --work-dir "$RUN"
 ```
 
-生成结果会在：
-
-```text
-output_project/<run>/
-├── slides.pptx       # 最终可编辑 PPT
-├── qa.json           # PPTX 结构检查报告
-├── previews/         # 预览图，用于人工比对
-├── ocr/              # OCR 与可选人工复核文件
-├── layouts/          # 页面布局 JSON
-├── assets/           # 提取出的图片对象
-└── debug/            # 调试可视化
-```
-
 如果 `build_deck.py` 提示有 OCR 不确定项，可以打开 `ocr/page_NN.ocr_review.annotated.png` 检查高亮文字，修改对应 `ocr_review.json` 的 `corrected_text` 后重新运行后两步。
 
 ## 常用参数
 
 ```bash
+python scripts/convert.py --source slides --pages 1,3,8
+python scripts/convert.py --source slides --skip-render
+python scripts/convert.py --source slides --detect-tables
+python scripts/convert.py --source slides --icon-review
 python scripts/ocr/prepare_ocr.py --pages 1,3,8 ...
 python scripts/build_deck.py --skip-render ...
 python scripts/build_deck.py --detect-tables ...
@@ -131,6 +149,7 @@ python scripts/build_deck.py --icon-review ...
 ```text
 .
 ├── scripts/
+│   ├── convert.py    # 一键转换入口
 │   ├── ocr/          # OCR、交叉验证、复核应用
 │   ├── page/         # 单页擦除文字、检测元素、生成布局
 │   ├── deck/         # 合并布局并生成 PPTX

@@ -1,0 +1,197 @@
+#!/usr/bin/env python3
+"""One-command converter: source image(s) -> editable PPTX."""
+from __future__ import annotations
+
+import argparse
+import re
+import shutil
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+from image_sources import (
+    SUPPORTED_IMAGE_EXTENSIONS,
+    discover_page_images,
+    supported_image_formats,
+)
+
+
+SCRIPTS_ROOT = Path(__file__).resolve().parent
+
+
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(
+        description="Convert one image or a folder of images into an editable PPTX."
+    )
+    p.add_argument(
+        "--source", "-s", required=True,
+        help=f"Source image or source directory ({supported_image_formats()}).",
+    )
+    p.add_argument(
+        "--work-dir", "-o",
+        help="Output run directory. Default: output_project/<source>_<timestamp>.",
+    )
+    p.add_argument(
+        "--name",
+        help="Run name used when --work-dir is omitted. Default: source name.",
+    )
+    p.add_argument(
+        "--pages",
+        help="Comma-separated page numbers to process after source normalization.",
+    )
+    p.add_argument(
+        "--skip-render", action="store_true",
+        help="Skip LibreOffice preview rendering.",
+    )
+    p.add_argument(
+        "--detect-tables", action="store_true",
+        help="Enable optional native table reconstruction.",
+    )
+    p.add_argument(
+        "--table-score-threshold", type=float, default=0.85,
+        help="Minimum table-structure confidence when --detect-tables is set.",
+    )
+    p.add_argument(
+        "--icon-review", action="store_true",
+        help="Emit icon-vs-text review packets.",
+    )
+    p.add_argument(
+        "--icon-decisions", action="store_true",
+        help="Apply filled icon review decisions on a rerun.",
+    )
+    p.add_argument(
+        "--ocr-threshold", type=float, default=0.95,
+        help="Paddle confidence threshold for OCR review queueing.",
+    )
+    p.add_argument(
+        "--max-review-entries", type=int, default=50,
+        help="Maximum OCR review entries per page.",
+    )
+    p.add_argument(
+        "--skip-cross-verify", action="store_true",
+        help="Skip EasyOCR/Tesseract cross-verification for faster local checks.",
+    )
+    return p.parse_args()
+
+
+def slugify(value: str) -> str:
+    text = re.sub(r"[^\w.-]+", "_", value.strip(), flags=re.UNICODE)
+    text = text.strip("._-")
+    return text or "deck"
+
+
+def default_work_dir(source: Path, name: str | None) -> Path:
+    default_name = source.stem if source.is_file() else source.name
+    run_name = slugify(name or default_name)
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    return Path("output_project") / f"{run_name}_{timestamp}"
+
+
+def supported_file(path: Path) -> bool:
+    return path.is_file() and path.suffix.lower() in SUPPORTED_IMAGE_EXTENSIONS
+
+
+def copy_as_pages(files: list[Path], dest_dir: Path) -> Path:
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    for i, src in enumerate(files, 1):
+        dst = dest_dir / f"page_{i:02d}{src.suffix.lower()}"
+        shutil.copy2(src, dst)
+    return dest_dir
+
+
+def prepare_source(source: Path, work: Path) -> Path:
+    """Return a directory containing page_NN source images.
+
+    If the user already provides a page_NN directory, use it in place.
+    Otherwise copy the image(s) into <work>/source/ as page_01, page_02,
+    etc. so the lower-level pipeline can stay strict and reproducible.
+    """
+    if source.is_file():
+        if source.suffix.lower() not in SUPPORTED_IMAGE_EXTENSIONS:
+            raise SystemExit(
+                f"Unsupported source image: {source}\n"
+                f"Supported formats: {supported_image_formats()}"
+            )
+        return copy_as_pages([source], work / "source")
+
+    if not source.is_dir():
+        raise SystemExit(f"Source does not exist: {source}")
+
+    files = [p for p in sorted(source.iterdir()) if supported_file(p)]
+    if not files:
+        raise SystemExit(
+            f"No supported images found in {source}\n"
+            f"Supported formats: {supported_image_formats()}"
+        )
+
+    try:
+        page_images = discover_page_images(source)
+    except ValueError:
+        page_images = {}
+    if len(page_images) == len(files):
+        return source
+
+    return copy_as_pages(files, work / "source")
+
+
+def run(cmd: list[str]) -> None:
+    print("\n$ " + " ".join(cmd), flush=True)
+    subprocess.run(cmd, check=True)
+
+
+def main() -> int:
+    args = parse_args()
+    source = Path(args.source).expanduser()
+    work = Path(args.work_dir).expanduser() if args.work_dir else default_work_dir(source, args.name)
+    work.mkdir(parents=True, exist_ok=True)
+    source_dir = prepare_source(source, work)
+
+    prepare_cmd = [
+        sys.executable, str(SCRIPTS_ROOT / "ocr" / "prepare_ocr.py"),
+        "--source-dir", str(source_dir),
+        "--work-dir", str(work),
+        "--threshold", str(args.ocr_threshold),
+        "--max-entries", str(args.max_review_entries),
+    ]
+    if args.pages:
+        prepare_cmd += ["--pages", args.pages]
+    if args.skip_cross_verify:
+        prepare_cmd.append("--skip-cross-verify")
+
+    apply_cmd = [
+        sys.executable, str(SCRIPTS_ROOT / "ocr" / "ocr_review_apply.py"),
+        "--work-dir", str(work),
+    ]
+
+    build_cmd = [
+        sys.executable, str(SCRIPTS_ROOT / "build_deck.py"),
+        "--source-dir", str(source_dir),
+        "--work-dir", str(work),
+        "--table-score-threshold", str(args.table_score_threshold),
+    ]
+    if args.pages:
+        build_cmd += ["--pages", args.pages]
+    if args.detect_tables:
+        build_cmd.append("--detect-tables")
+    if args.icon_review:
+        build_cmd.append("--icon-review")
+    if args.icon_decisions:
+        build_cmd.append("--icon-decisions")
+    if args.skip_render:
+        build_cmd.append("--skip-render")
+
+    run(prepare_cmd)
+    run(apply_cmd)
+    run(build_cmd)
+
+    print("\nDone.")
+    print(f"  PPTX:     {work / 'slides.pptx'}")
+    print(f"  QA:       {work / 'qa.json'}")
+    if not args.skip_render:
+        print(f"  Previews: {work / 'previews'}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

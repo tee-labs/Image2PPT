@@ -14,29 +14,21 @@ When the user asks to convert images into PPT:
    bash scripts/bootstrap.sh
    ```
 
-2. If the user provides one image, create a temporary source directory and
-   copy or symlink it as `page_01.<ext>`.
+2. Use the path the user provided directly. `convert.py` accepts either a
+   single image or a directory. Supported extensions are PNG, JPG/JPEG,
+   WebP, BMP, and TIF/TIFF.
 
-3. If the user provides a folder, make sure supported images are named
-   `page_NN.<ext>`. Supported extensions are PNG, JPG/JPEG, WebP, BMP,
-   and TIF/TIFF.
-
-4. Run:
+3. Run the one-command pipeline:
 
    ```bash
-   RUN="output_project/<name>_$(date +%Y%m%d_%H%M%S)"
-   SRC="<source-dir>"
-
-   python scripts/ocr/prepare_ocr.py --source-dir "$SRC" --work-dir "$RUN"
-   python scripts/ocr/ocr_review_apply.py --work-dir "$RUN"
-   python scripts/build_deck.py --source-dir "$SRC" --work-dir "$RUN"
+   python scripts/convert.py --source <source-image-or-dir>
    ```
 
-5. Report:
+4. Report:
 
-   - final PPTX: `$RUN/slides.pptx`
-   - QA report: `$RUN/qa.json`
-   - previews: `$RUN/previews/`
+   - final PPTX: `output_project/<run>/slides.pptx`
+   - QA report: `output_project/<run>/qa.json`
+   - previews: `output_project/<run>/previews/`
    - any known fidelity issues
 
 ## Notes

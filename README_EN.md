@@ -53,6 +53,12 @@ For first-time setup, ask the agent to run:
 bash scripts/bootstrap.sh
 ```
 
+Then ask it to run:
+
+```bash
+python scripts/convert.py --source slides
+```
+
 Codex, Claude Code, and general agents can use `AGENTS.md` and
 `SKILL.md`.
 
@@ -76,7 +82,20 @@ slides/
 └── page_04.tiff
 ```
 
-Run the pipeline:
+Run the one-command pipeline:
+
+```bash
+python scripts/convert.py --source slides
+```
+
+For a single image:
+
+```bash
+python scripts/convert.py --source /path/to/page_01.png
+```
+
+For debugging, the one-command flow can still be split into the three
+lower-level steps:
 
 ```bash
 RUN="output_project/demo_$(date +%Y%m%d_%H%M%S)"
