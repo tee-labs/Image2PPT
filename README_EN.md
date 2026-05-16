@@ -53,8 +53,8 @@ For first-time setup, ask the agent to run:
 bash scripts/bootstrap.sh
 ```
 
-Codex and general agents can use `AGENTS.md` and `SKILL.md`. Claude Code
-can use `CLAUDE.md`.
+Codex, Claude Code, and general agents can use `AGENTS.md` and
+`SKILL.md`.
 
 ### Option 2: Use It As A Standalone CLI Tool
 
@@ -92,7 +92,8 @@ The final deck is written to `output_project/<run>/slides.pptx`. QA output, prev
 ## Agent Support
 
 - `AGENTS.md`: guide for Codex and general coding agents.
-- `CLAUDE.md`: guide for Claude Code.
+- `SKILL.md`: skill workflow used by compatible agents, including
+  Claude Code when it is configured to read project skill instructions.
 
 ## Contact
 

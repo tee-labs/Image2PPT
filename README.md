@@ -41,8 +41,7 @@ git clone https://github.com/GuopengLin/Image2PPT.git ~/.codex/skills/deckweaver
 
 2. 用 Codex、Claude Code 或其他本地 agent 打开项目目录。
 
-   - Codex / 通用 agent 可以参考 `AGENTS.md` 和 `SKILL.md`。
-   - Claude Code 可以参考 `CLAUDE.md`。
+   - Codex / Claude Code / 通用 agent 可以参考 `AGENTS.md` 和 `SKILL.md`。
    - 仓库根目录保留 `SKILL.md`，因此它仍然可以作为 skill 使用。
 
 3. 把要转换的图片或图片文件夹告诉 agent，例如：
@@ -140,7 +139,6 @@ python scripts/build_deck.py --icon-review ...
 │   └── optional/     # 可选后处理工具
 ├── references/       # 布局格式与流程说明
 ├── AGENTS.md         # Codex / 通用 coding agent 使用说明
-├── CLAUDE.md         # Claude Code 使用说明
 ├── SKILL.md          # skill 工作流说明
 └── requirements.txt
 ```
