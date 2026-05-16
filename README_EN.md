@@ -59,8 +59,7 @@ Then ask it to run:
 python scripts/convert.py --source slides
 ```
 
-Codex, Claude Code, and general agents can use `AGENTS.md` and
-`SKILL.md`.
+Codex, Claude Code, and general agents can use `SKILL.md`.
 
 ### Option 2: Use It As A Standalone CLI Tool
 
@@ -108,11 +107,11 @@ python scripts/build_deck.py --source-dir "$SRC" --work-dir "$RUN"
 
 The final deck is written to `output_project/<run>/slides.pptx`. QA output, preview renders, OCR data, extracted assets, and layout JSON files are stored in the same run directory.
 
-## Agent Support
+## Skill Support
 
-- `AGENTS.md`: guide for Codex and general coding agents.
 - `SKILL.md`: skill workflow used by compatible agents, including
-  Claude Code when it is configured to read project skill instructions.
+  Codex and Claude Code when they are configured to read project skill
+  instructions.
 
 ## Contact
 

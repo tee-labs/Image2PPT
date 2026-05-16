@@ -6,12 +6,14 @@
 
 中文 | [English](README_EN.md)
 
-DeckWeaver 可以把 GPT、Gemini等输出的图片重建为可编辑的 PowerPoint 文件。它会尽量把普通文字还原成真正的 PPT 文本框，把图标、Logo、图片和装饰元素拆成独立图片对象。
+DeckWeaver 可以把 GPT、Gemini等输出的图片重建为可编辑的 PowerPoint 文件。它可以作为Agent的Skill使用，或者直接作为一个无大模型介入的命令行工具。
+
+几乎所有的图片上的文字都会被还原成可编辑的 PPT 文本框，图标、Logo、图片和装饰元素等也会拆成独立图片对象。
 
 ## 优点
 
 - 几乎所有文字和图标都可以在 PowerPoint 里继续编辑、移动或替换。
-- Token 消耗很低：主体流程使用本地 OCR 和图像算法，不需要把整页反复交给云端多模态模型。
+- Token 消耗很低（作为命令行工具甚至可以无token消耗）：主体流程使用本地 OCR 和图像算法，不需要把整页反复交给云端多模态模型。
 - 生成速度快：批量 OCR 复用热模型，后续页面流水线自动完成。
 - 无需额外云端 API：OCR、图像分割、PPTX 生成和预览检查都在本地运行。
 - 支持常见位图输入：PNG、JPG/JPEG、WebP、BMP、TIF/TIFF。
@@ -26,24 +28,15 @@ DeckWeaver 可以把 GPT、Gemini等输出的图片重建为可编辑的 PowerPo
 
 ```bash
 git clone https://github.com/GuopengLin/Image2PPT.git
-cd Image2PPT
-```
-
-Codex skill 目录示例：
-
-```bash
-git clone https://github.com/GuopengLin/Image2PPT.git ~/.codex/skills/deckweaver
 ```
 
 2. 用 Codex、Claude Code 或其他本地 agent 打开项目目录。
 
-   - Codex / Claude Code / 通用 agent 可以参考 `AGENTS.md` 和 `SKILL.md`。
-   - 仓库根目录保留 `SKILL.md`，因此它仍然可以作为 skill 使用。
 
 3. 把要转换的图片或图片文件夹告诉 agent，例如：
 
 ```text
-请使用这个项目里的 skill，把 slides/ 文件夹下的所有图片转换成一个可编辑 PPT。
+请使用这个项目里的 skill，把 /path/to_dir 文件夹下的所有图片转换成一个可编辑 PPT。
 ```
 
 也可以指定单张图片：
@@ -52,17 +45,23 @@ git clone https://github.com/GuopengLin/Image2PPT.git ~/.codex/skills/deckweaver
 请使用这个项目里的 skill，把 /path/to/page_01.png 转换成可编辑 PPT。
 ```
 
-首次运行时，让 agent 先执行 `bash scripts/bootstrap.sh` 安装依赖。之后让它运行：
+首次运行时，agent 会先执行 `bash scripts/bootstrap.sh` 安装依赖，可能需要一定的耗时。之后它会运行一键转换命令：
 
 ```bash
-python scripts/convert.py --source slides
+python scripts/convert.py --source /path/to_dir
 ```
 
 它会自动生成 OCR、布局、PPTX 和预览文件，最终结果在 `output_project/<run>/slides.pptx`。
 
 ### 方式二：作为独立命令行工具使用
 
-适合不使用 agent、只想手动运行脚本的用户。
+适合以下几类用户：
+
+- 不想要消耗token
+
+- 对于文字正确性要求不高（因为不会有大模型介入文字识别）
+
+- 想要借助命令行实现大批量识别
 
 ```bash
 git clone https://github.com/GuopengLin/Image2PPT.git
@@ -88,7 +87,7 @@ slides/
 python scripts/convert.py --source slides
 ```
 
-也可以处理单张图片：
+也可以直接处理单张图片：
 
 ```bash
 python scripts/convert.py --source /path/to/page_01.png
@@ -157,14 +156,13 @@ python scripts/build_deck.py --icon-review ...
 │   ├── tables/       # 可选表格识别
 │   └── optional/     # 可选后处理工具
 ├── references/       # 布局格式与流程说明
-├── AGENTS.md         # Codex / 通用 coding agent 使用说明
 ├── SKILL.md          # skill 工作流说明
 └── requirements.txt
 ```
 
 ## 注意事项
 
-- 输入文件必须使用 `page_NN.<ext>` 命名，每页只能保留一个同页码图片文件。
+- 一键入口支持单张图片或图片文件夹；如果图片没有按 `page_NN.<ext>` 命名，会自动复制到运行目录并按页码编号。
 - 多页 PPT 最好保持一致比例；PowerPoint 一个文件只能有一种页面尺寸。
 - 复杂图表目前会优先作为可移动图片对象保留，而不是还原为可编辑数据图表。
 - 生成文件默认写入 `output_project/`，该目录不会提交到 Git。
