@@ -22,6 +22,44 @@ Use it when you only have images. If you already have the native `.pptx`, edit t
 
 ## Quick Start
 
+### Option 1: Use It As A Skill / Agent Tool
+
+Use this path if you work with Codex, Claude Code, or another local
+coding agent.
+
+Clone the project:
+
+```bash
+git clone https://github.com/GuopengLin/Image2PPT.git
+cd Image2PPT
+```
+
+Or clone it directly into a Codex skill directory:
+
+```bash
+git clone https://github.com/GuopengLin/Image2PPT.git ~/.codex/skills/deckweaver
+```
+
+Then open the project with your agent and ask it to convert one image or
+all images in a folder, for example:
+
+```text
+Use this skill to convert all images under slides/ into an editable PPT.
+```
+
+For first-time setup, ask the agent to run:
+
+```bash
+bash scripts/bootstrap.sh
+```
+
+Codex and general agents can use `AGENTS.md` and `SKILL.md`. Claude Code
+can use `CLAUDE.md`.
+
+### Option 2: Use It As A Standalone CLI Tool
+
+Clone and install dependencies:
+
 ```bash
 git clone https://github.com/GuopengLin/Image2PPT.git
 cd Image2PPT
@@ -55,7 +93,6 @@ The final deck is written to `output_project/<run>/slides.pptx`. QA output, prev
 
 - `AGENTS.md`: guide for Codex and general coding agents.
 - `CLAUDE.md`: guide for Claude Code.
-- `agents/codex.yaml`: optional Codex/OpenAI-style UI metadata.
 
 ## Contact
 
