@@ -1,0 +1,29 @@
+{
+  "pptx": "examples/demo_output/deckweaver-demo.pptx",
+  "slide_count": 1,
+  "media_count": 17,
+  "text_run_count": 18,
+  "text_runs": [
+    "DeckWeaver Demo",
+    "Turn AI slide images",
+    "into editable PPT",
+    "A local pipeline for GPT / Gemini generated pages,",
+    "slide screenshots, and exported bitmap designs.",
+    "Editable Text",
+    "Low Token Use",
+    "Local workflow",
+    "Input image",
+    "OCR text becomes PPT text",
+    "Local OCR reduces model calls",
+    "OCR + assets",
+    "Batch Friendly",
+    "Common Formats",
+    "Editable PPTX",
+    "PNG, JPG, WebP, BMP, TIFF",
+    "Convert one image or a folder",
+    "Agent Skill + Standalone CLI | No extra cloud API required"
+  ],
+  "zero_byte_media": [],
+  "placeholder_text": [],
+  "failures": []
+}

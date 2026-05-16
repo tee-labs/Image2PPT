@@ -18,6 +18,14 @@ Nearly all text in the source image is restored as editable PPT text boxes, whil
 - No extra cloud API required: OCR, image segmentation, PPTX generation, and preview checks all run locally.
 - Supports common bitmap inputs: PNG, JPG/JPEG, WebP, BMP, TIF/TIFF.
 
+## Showcase
+
+<p align="center">
+  <img src="assets/showcase/sample-comparison.png" alt="DeckWeaver sample result">
+</p>
+
+The sample source image is available at [examples/demo_source/page_01.png](examples/demo_source/page_01.png), and the generated editable deck is available at [examples/demo_output/deckweaver-demo.pptx](examples/demo_output/deckweaver-demo.pptx).
+
 ## Quick Start
 
 ### Option 1: Use As A Skill / Agent Tool
@@ -124,8 +132,14 @@ python scripts/build_deck.py --icon-review ...
 
 ## Project Layout
 
+<p align="center">
+  <img src="assets/showcase/project-structure.png" alt="DeckWeaver project structure">
+</p>
+
 ```text
 .
+├── assets/            # logo and showcase images
+├── examples/          # sample source image and generated PPTX
 ├── scripts/
 │   ├── convert.py    # one-command conversion entry point
 │   ├── ocr/          # OCR, cross-verification, review application

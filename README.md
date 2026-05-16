@@ -18,6 +18,14 @@ DeckWeaver 可以把 GPT、Gemini等输出的图片重建为可编辑的 PowerPo
 - 无需额外云端 API：OCR、图像分割、PPTX 生成和预览检查都在本地运行。
 - 支持常见位图输入：PNG、JPG/JPEG、WebP、BMP、TIF/TIFF。
 
+## 效果展示
+
+<p align="center">
+  <img src="assets/showcase/sample-comparison.png" alt="DeckWeaver sample result">
+</p>
+
+示例输入图片在 [examples/demo_source/page_01.png](examples/demo_source/page_01.png)，生成的可编辑 PPT 在 [examples/demo_output/deckweaver-demo.pptx](examples/demo_output/deckweaver-demo.pptx)。
+
 ## 快速开始
 
 ### 方式一：作为 Skill / Agent 工具使用
@@ -129,8 +137,14 @@ python scripts/build_deck.py --icon-review ...
 
 ## 项目结构
 
+<p align="center">
+  <img src="assets/showcase/project-structure.png" alt="DeckWeaver project structure">
+</p>
+
 ```text
 .
+├── assets/            # Logo 与展示图片
+├── examples/          # 示例输入图片与生成的 PPTX
 ├── scripts/
 │   ├── convert.py    # 一键转换入口
 │   ├── ocr/          # OCR、交叉验证、复核应用
