@@ -5,8 +5,8 @@ This is the orchestrator that walks every `page_NN.ocr.json` in a work
 directory and produces, per page, a cleaned image, an inventory JSON, a
 crop manifest, a layout JSON, and the extracted asset PNGs.
 
-The three core stages run as subprocesses so each script also works
-standalone for hand-runs:
+The three core stages are imported and called in-process to avoid
+per-page Python startup. Each script also exposes a CLI for hand-runs:
 
     erase_text.py       remove OCR text from the slide
     build_inventory.py  cv2 connected-component detection → inventory
@@ -66,6 +66,8 @@ sys.path.insert(0, str(SCRIPTS_ROOT))
 sys.path.insert(0, str(SCRIPTS_ROOT / "tables"))
 
 import erase_text as et
+import build_inventory as bi
+import inventory_to_layout as i2l
 import _heuristics as heur
 import detect_tables as dt
 from image_sources import find_page_image, supported_image_formats
@@ -780,8 +782,6 @@ def process_page(num: str, src_dir: Path, work: Path,
     layout_path.parent.mkdir(parents=True, exist_ok=True)
     (work / "ocr").mkdir(parents=True, exist_ok=True)
 
-    import subprocess as _sp
-
     # ---- preprocess OCR (in-memory) for table detection + icon overrides ----
     ocr = json.loads(ocr_path.read_text(encoding="utf-8"))
     src_img = cv2.imread(str(src_path))
@@ -832,21 +832,17 @@ def process_page(num: str, src_dir: Path, work: Path,
             encoding="utf-8",
         )
 
-    # ---- stage 1: erase_text ----
-    erase_cmd = [
-        sys.executable, str(SCRIPTS / "erase_text.py"),
-        "--image", str(src_path),
-        "--ocr", str(ocr_for_subprocess),
-        "--out", str(clean_path),
-        "--debug-dir", str(debug_dir),
-    ]
-    if icon_review_dump:
-        erase_cmd += ["--icon-review-dump", str(icon_review_dir)]
-    if icon_decisions and decisions_json.exists():
-        # erase_text additionally consumes component-level overrides
-        # from the same JSON.
-        erase_cmd += ["--icon-decisions", str(decisions_json)]
-    _sp.run(erase_cmd, check=True, capture_output=True)
+    # ---- stage 1: erase_text (in-process) ----
+    et.run(
+        image=str(src_path),
+        ocr=str(ocr_for_subprocess),
+        out=str(clean_path),
+        debug_dir=str(debug_dir),
+        icon_review_dump=str(icon_review_dir) if icon_review_dump else None,
+        icon_decisions=(str(decisions_json)
+                        if icon_decisions and decisions_json.exists()
+                        else None),
+    )
     _erase_table_regions(clean_path, table_layout_elements)
     if table_layout_elements:
         stem = src_path.stem
@@ -854,28 +850,26 @@ def process_page(num: str, src_dir: Path, work: Path,
         if clean_dbg is not None:
             cv2.imwrite(str(debug_dir / f"{stem}_clean.png"), clean_dbg)
 
-    # ---- stage 2: build_inventory ----
-    _sp.run([
-        sys.executable, str(SCRIPTS / "build_inventory.py"),
-        "--clean", str(clean_path),
-        "--source", str(src_path),
-        "--ocr", str(filtered_ocr_path),
-        "--out", str(inv_path),
-        "--debug-dir", str(debug_dir),
-        "--masks-dir", str(masks_dir),
-    ], check=True, capture_output=True)
+    # ---- stage 2: build_inventory (in-process) ----
+    bi.run(
+        clean=str(clean_path),
+        source=str(src_path),
+        ocr=str(filtered_ocr_path),
+        out=str(inv_path),
+        debug_dir=str(debug_dir),
+        masks_dir=str(masks_dir),
+    )
 
-    # ---- stage 3: inventory_to_layout ----
-    _sp.run([
-        sys.executable, str(SCRIPTS / "inventory_to_layout.py"),
-        "--inventory", str(inv_path),
-        "--source", str(src_path),
-        "--cleaned", str(clean_path),
-        "--asset-prefix", f"assets/page_{num}",
-        "--out-assets-dir", str(assets_dir),
-        "--out-manifest", str(manifest_path),
-        "--out-layout", str(layout_path),
-    ], check=True, capture_output=True)
+    # ---- stage 3: inventory_to_layout (in-process) ----
+    i2l.run(
+        inventory=str(inv_path),
+        source=str(src_path),
+        cleaned=str(clean_path),
+        asset_prefix=f"assets/page_{num}",
+        out_assets_dir=str(assets_dir),
+        out_manifest=str(manifest_path),
+        out_layout=str(layout_path),
+    )
 
     # Merge any accepted table elements into the layout. They render
     # after images but interleave with text via z-order; we append at

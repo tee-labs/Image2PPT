@@ -3046,8 +3046,29 @@ def restore_ignored_bullet_marker_images(
 # =============================================================================
 
 
+def run(*, inventory: str, source: str, cleaned: str,
+        asset_prefix: str, out_assets_dir: str,
+        out_manifest: str, out_layout: str,
+        slide_width_in: float | None = None,
+        slide_height_in: float = 7.5) -> None:
+    """Programmatic entry — see parse_args() for the CLI equivalent.
+
+    Used by run_pipeline.process_page to skip subprocess overhead.
+    """
+    args = argparse.Namespace(
+        inventory=inventory, source=source, cleaned=cleaned,
+        asset_prefix=asset_prefix, out_assets_dir=out_assets_dir,
+        out_manifest=out_manifest, out_layout=out_layout,
+        slide_width_in=slide_width_in, slide_height_in=slide_height_in,
+    )
+    _run(args)
+
+
 def main() -> None:
-    args = parse_args()
+    _run(parse_args())
+
+
+def _run(args: argparse.Namespace) -> None:
     inventory = json.loads(Path(args.inventory).read_text(encoding="utf-8"))
     source = cv2.imread(args.source)
     cleaned = cv2.imread(args.cleaned)

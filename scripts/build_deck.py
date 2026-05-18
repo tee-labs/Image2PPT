@@ -89,8 +89,8 @@ def parse_args() -> argparse.Namespace:
                    help="Skip preview-based text size/position calibration.")
     p.add_argument("--font-calibration-iterations", type=int, default=1,
                    help="Text font-size calibration iterations (default: 1).")
-    p.add_argument("--calibration-iterations", type=int, default=4,
-                   help="Text position calibration iterations (default: 4).")
+    p.add_argument("--calibration-iterations", type=int, default=2,
+                   help="Text position calibration iterations (default: 2).")
     p.add_argument("--calibration-max-shift", type=float, default=30.0,
                    help="Max source-pixel shift per text box per calibration "
                         "iteration (default: 30).")

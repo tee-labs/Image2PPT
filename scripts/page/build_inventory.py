@@ -371,8 +371,30 @@ def conservative_split(crop: np.ndarray, min_gap: int = 12) -> list[tuple]:
     return sub_boxes
 
 
+def run(*, clean: str, source: str, ocr: str, out: str,
+        debug_dir: str | None = None,
+        masks_dir: str | None = None,
+        min_area: int = 80, dilate: int = 6, split_gap: int = 12,
+        use_fastsam: bool = False) -> None:
+    """Programmatic entry — see parse_args() for the CLI equivalent.
+
+    Lets run_pipeline.process_page invoke build_inventory in-process,
+    skipping subprocess startup cost.
+    """
+    args = argparse.Namespace(
+        clean=clean, source=source, ocr=ocr, out=out,
+        debug_dir=debug_dir, masks_dir=masks_dir,
+        min_area=min_area, dilate=dilate, split_gap=split_gap,
+        use_fastsam=use_fastsam,
+    )
+    _run(args)
+
+
 def main() -> None:
-    args = parse_args()
+    _run(parse_args())
+
+
+def _run(args: argparse.Namespace) -> None:
     cleaned = cv2.imread(args.clean)
     source = cv2.imread(args.source)
     if cleaned is None or source is None:

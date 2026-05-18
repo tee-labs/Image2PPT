@@ -962,30 +962,36 @@ def _render_icon_contact_sheet(decisions: list[dict], crops_dir: Path,
 # =============================================================================
 
 
-def main() -> None:
-    args = parse_args()
-    img = cv2.imread(args.image)
+def run(*, image: str, ocr: str, out: str,
+        debug_dir: str | None = None,
+        icon_review_dump: str | None = None,
+        icon_decisions: str | None = None) -> None:
+    """Programmatic entry point — same contract as the CLI flags.
+
+    Used by run_pipeline.process_page to skip the subprocess fork.
+    """
+    img = cv2.imread(image)
     if img is None:
-        raise SystemExit(f"Could not read image: {args.image}")
-    ocr_data = json.loads(Path(args.ocr).read_text(encoding="utf-8"))
+        raise SystemExit(f"Could not read image: {image}")
+    ocr_data = json.loads(Path(ocr).read_text(encoding="utf-8"))
     ocr_data = preprocess_ocr(ocr_data, img=img)
-    overrides = (_load_icon_decisions(args.icon_decisions)
-                 if args.icon_decisions else None)
+    overrides = (_load_icon_decisions(icon_decisions)
+                 if icon_decisions else None)
     ocr_data = apply_ocr_item_overrides(ocr_data, overrides)
     cleaned, mask, decisions = erase_text(img, ocr_data, overrides=overrides)
-    Path(args.out).parent.mkdir(parents=True, exist_ok=True)
-    cv2.imwrite(args.out, cleaned)
+    Path(out).parent.mkdir(parents=True, exist_ok=True)
+    cv2.imwrite(out, cleaned)
 
-    if args.icon_review_dump:
-        _dump_icon_review_packet(img, decisions, Path(args.icon_review_dump),
-                                 Path(args.image))
+    if icon_review_dump:
+        _dump_icon_review_packet(img, decisions, Path(icon_review_dump),
+                                 Path(image))
 
-    if args.debug_dir:
-        debug_dir = Path(args.debug_dir)
-        debug_dir.mkdir(parents=True, exist_ok=True)
-        stem = Path(args.image).stem
-        cv2.imwrite(str(debug_dir / f"{stem}_mask.png"), mask)
-        cv2.imwrite(str(debug_dir / f"{stem}_clean.png"), cleaned)
+    if debug_dir:
+        debug_path = Path(debug_dir)
+        debug_path.mkdir(parents=True, exist_ok=True)
+        stem = Path(image).stem
+        cv2.imwrite(str(debug_path / f"{stem}_mask.png"), mask)
+        cv2.imwrite(str(debug_path / f"{stem}_clean.png"), cleaned)
         # OCR-bbox overlay: original image with each detected text drawn as
         # a coloured rectangle (green = will be erased, orange = preserved
         # as part of icon/logo/etc.).
@@ -1001,7 +1007,15 @@ def main() -> None:
             label = item["text"][:12]
             cv2.putText(ocr_vis, label, (x1 + 1, max(10, y1 - 2)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.32, color, 1, cv2.LINE_AA)
-        cv2.imwrite(str(debug_dir / f"{stem}_ocr.png"), ocr_vis)
+        cv2.imwrite(str(debug_path / f"{stem}_ocr.png"), ocr_vis)
+
+
+def main() -> None:
+    args = parse_args()
+    run(image=args.image, ocr=args.ocr, out=args.out,
+        debug_dir=args.debug_dir,
+        icon_review_dump=args.icon_review_dump,
+        icon_decisions=args.icon_decisions)
     print(args.out)
 
 
