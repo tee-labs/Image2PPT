@@ -41,9 +41,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import multiprocessing as mp
+import os
 import subprocess
 import sys
 import time
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 # Per-page scripts live in scripts/page/; tables/ is consulted by
@@ -94,7 +97,41 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--calibration-max-shift", type=float, default=30.0,
                    help="Max source-pixel shift per text box per calibration "
                         "iteration (default: 30).")
+    p.add_argument("--workers", type=int, default=0,
+                   help="Parallel workers for stage 1 per-page processing. "
+                        "0 = auto (min(physical_cpu, n_pages, 8)). "
+                        "1 = serial (in-process, no fork).")
     return p.parse_args()
+
+
+def _process_page_worker(payload: dict) -> dict:
+    """Top-level worker for ProcessPoolExecutor (needs to be picklable).
+
+    Each spawn-child re-imports this module, which sets up sys.path for
+    page/ and tables/ before importing run_pipeline.
+    """
+    num = payload["num"]
+    t = time.time()
+    result = rp.process_page(
+        num, Path(payload["src"]), Path(payload["work"]),
+        detect_tables_flag=payload["detect_tables"],
+        table_score_threshold=payload["table_score_threshold"],
+        icon_review_dump=payload["icon_review"],
+        icon_decisions=payload["icon_decisions"],
+    )
+    result["_elapsed"] = time.time() - t
+    return result
+
+
+def _auto_workers(n_pages: int) -> int:
+    """Pick a worker count that uses cores without thrashing memory."""
+    try:
+        cores = os.cpu_count() or 4
+    except Exception:
+        cores = 4
+    # Each worker re-imports cv2/numpy/PaddleX shims — ~200-400 MB resident.
+    # Cap at 8 to leave headroom on dev machines; cap by page count too.
+    return max(1, min(cores, n_pages, 8))
 
 
 def banner(title: str) -> None:
@@ -129,22 +166,54 @@ def main() -> int:
                 f"ERROR: no page_NN.ocr.json under {work / 'ocr'}\n"
             )
             return 1
-        for n in nums:
-            t = time.time()
-            try:
-                r = rp.process_page(
-                    n, src, work,
-                    detect_tables_flag=args.detect_tables,
-                    table_score_threshold=args.table_score_threshold,
-                    icon_review_dump=args.icon_review,
-                    icon_decisions=args.icon_decisions,
-                )
-            except Exception as exc:
-                sys.stderr.write(f"page {n}: ERROR {exc}\n")
-                raise
-            tables_note = f" tables={r['tables']}" if r.get("tables") else ""
-            print(f"page {n}: text={r['text']:>3} image={r['image']:>3}"
-                  f"{tables_note} ({time.time() - t:.1f}s)", flush=True)
+        workers = args.workers if args.workers > 0 else _auto_workers(len(nums))
+        if workers > 1 and len(nums) > 1:
+            print(f"  parallel: {workers} workers × {len(nums)} pages",
+                  flush=True)
+            ctx = mp.get_context("spawn")
+            payloads = [{
+                "num": n, "src": str(src), "work": str(work),
+                "detect_tables": args.detect_tables,
+                "table_score_threshold": args.table_score_threshold,
+                "icon_review": args.icon_review,
+                "icon_decisions": args.icon_decisions,
+            } for n in nums]
+            results: dict[str, dict] = {}
+            with ProcessPoolExecutor(max_workers=workers,
+                                     mp_context=ctx) as ex:
+                futures = {ex.submit(_process_page_worker, p): p["num"]
+                           for p in payloads}
+                for fut in as_completed(futures):
+                    n = futures[fut]
+                    try:
+                        r = fut.result()
+                    except Exception as exc:
+                        sys.stderr.write(f"page {n}: ERROR {exc}\n")
+                        raise
+                    results[n] = r
+                    tables_note = (f" tables={r['tables']}"
+                                   if r.get("tables") else "")
+                    print(f"page {n}: text={r['text']:>3} "
+                          f"image={r['image']:>3}{tables_note} "
+                          f"({r['_elapsed']:.1f}s)", flush=True)
+        else:
+            for n in nums:
+                t = time.time()
+                try:
+                    r = rp.process_page(
+                        n, src, work,
+                        detect_tables_flag=args.detect_tables,
+                        table_score_threshold=args.table_score_threshold,
+                        icon_review_dump=args.icon_review,
+                        icon_decisions=args.icon_decisions,
+                    )
+                except Exception as exc:
+                    sys.stderr.write(f"page {n}: ERROR {exc}\n")
+                    raise
+                tables_note = (f" tables={r['tables']}"
+                               if r.get("tables") else "")
+                print(f"page {n}: text={r['text']:>3} image={r['image']:>3}"
+                      f"{tables_note} ({time.time() - t:.1f}s)", flush=True)
         print(f"  stage 1 done in {time.time() - ts:.1f}s", flush=True)
     else:
         banner("1/5  run_pipeline SKIPPED")

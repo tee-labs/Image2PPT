@@ -93,6 +93,10 @@ def parse_args() -> argparse.Namespace:
         "--skip-cross-verify", action="store_true",
         help="Skip EasyOCR/Tesseract cross-verification for faster local checks.",
     )
+    p.add_argument(
+        "--workers", type=int, default=0,
+        help="Parallel workers for per-page processing (0 = auto, 1 = serial).",
+    )
     return p.parse_args()
 
 
@@ -214,6 +218,8 @@ def main() -> int:
     if args.calibration_max_shift != 30.0:
         build_cmd += ["--calibration-max-shift",
                       str(args.calibration_max_shift)]
+    if args.workers != 0:
+        build_cmd += ["--workers", str(args.workers)]
 
     run(prepare_cmd)
     run(apply_cmd)
