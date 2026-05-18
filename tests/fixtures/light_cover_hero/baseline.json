@@ -1,0 +1,44 @@
+{
+  "cached_pipeline": false,
+  "composite": 0.964,
+  "counts": {
+    "image_expected": [
+      1,
+      6
+    ],
+    "image_in_range": true,
+    "image_object_count": 4,
+    "textbox_count": 6,
+    "textbox_expected": [
+      3,
+      8
+    ],
+    "textbox_in_range": true
+  },
+  "fixture": "light_cover_hero",
+  "runtime_seconds": 64.42,
+  "structural": {
+    "failures": [],
+    "media_count": 4,
+    "ok": true,
+    "placeholder_count": 0,
+    "slide_count": 1,
+    "text_run_count": 12,
+    "zero_byte_media": 0
+  },
+  "text": {
+    "cer": 0.0862,
+    "extra_ratio": 0.0536,
+    "found_keyword_count": 4,
+    "keyword_recall": 1.0,
+    "missing_keywords": [],
+    "total_text_chars": 56
+  },
+  "visual": {
+    "available": true,
+    "blurred_match_ratio": 0.9376,
+    "color_histogram_sim": 0.9998,
+    "exact_match_ratio": 0.9295,
+    "near_match_ratio": 0.956
+  }
+}

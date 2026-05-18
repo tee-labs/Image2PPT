@@ -405,6 +405,121 @@ def fill_color(img: np.ndarray, x1: int, y1: int, x2: int, y2: int) -> np.ndarra
     return ring_color
 
 
+def _ocr_guard_boxes(item: dict) -> list[tuple[int, int, int, int]]:
+    """Return OCR sub-boxes that tightly describe the text geometry.
+
+    PaddleOCR can emit per-character/per-word boxes. Those are much safer
+    erasure bounds than the line bbox when a nearby connector, card edge,
+    or dashed border shares the text colour and happens to fall inside
+    the line bbox.
+    """
+    for key in ("char_boxes", "word_boxes"):
+        raw_boxes = item.get(key)
+        if not isinstance(raw_boxes, list) or not raw_boxes:
+            continue
+        boxes: list[tuple[int, int, int, int]] = []
+        for raw in raw_boxes:
+            if not isinstance(raw, (list, tuple)) or len(raw) != 4:
+                continue
+            try:
+                bx1, by1, bx2, by2 = (int(round(float(v))) for v in raw)
+            except (TypeError, ValueError):
+                continue
+            if bx2 <= bx1 or by2 <= by1:
+                continue
+            boxes.append((bx1, by1, bx2, by2))
+        if boxes:
+            return boxes
+    return []
+
+
+def _text_geometry_guard_mask(
+    item: dict,
+    x1: int,
+    y1: int,
+    x2: int,
+    y2: int,
+    scale: float,
+) -> np.ndarray | None:
+    boxes = _ocr_guard_boxes(item)
+    if not boxes:
+        return None
+    h, w = y2 - y1, x2 - x1
+    if h <= 0 or w <= 0:
+        return None
+    guard = np.zeros((h, w), dtype=bool)
+    heights = [by2 - by1 for _bx1, by1, _bx2, by2 in boxes]
+    median_h = float(np.median(heights)) if heights else float(h)
+    # Paddle word boxes can be horizontally tight on bold Latin/CJK runs
+    # (notably mixed `NEV让...` titles). Use a wider x guard so antialias
+    # and overhanging strokes are erased; keep y padding more conservative
+    # to avoid eating same-colour horizontal rules above/below the line.
+    pad_x = max(1, int(round(2 * scale)), int(round(0.35 * median_h)))
+    pad_y = max(1, int(round(2 * scale)), int(round(0.18 * median_h)))
+    for bx1, by1, bx2, by2 in boxes:
+        gx1 = max(0, bx1 - x1 - pad_x)
+        gy1 = max(0, by1 - y1 - pad_y)
+        gx2 = min(w, bx2 - x1 + pad_x)
+        gy2 = min(h, by2 - y1 + pad_y)
+        if gx2 > gx1 and gy2 > gy1:
+            guard[gy1:gy2, gx1:gx2] = True
+    if int(guard.sum()) < 4:
+        return None
+    return guard
+
+
+def _drop_thin_non_text_row_bands(stroke: np.ndarray, text: str) -> np.ndarray:
+    """Remove thin horizontal decorations accidentally classified as text.
+
+    Blue connector dashes and card borders can sit in the same OCR line
+    bbox as blue text. They form a very short row band separated from the
+    taller glyph band, while real multi-line text forms bands of similar
+    height. This keeps the taller text bands and drops only wide, thin
+    extras.
+    """
+    compact = "".join(c for c in (text or "") if c.strip())
+    if len(compact) < 3 or stroke.size == 0:
+        return stroke
+    h, w = stroke.shape[:2]
+    if h < 8 or w < 8:
+        return stroke
+
+    rows = (stroke.sum(axis=1) > 0).astype(np.uint8)[:, None]
+    rows = cv2.morphologyEx(rows, cv2.MORPH_CLOSE,
+                            np.ones((3, 1), np.uint8))[:, 0] > 0
+    bands: list[tuple[int, int]] = []
+    start: int | None = None
+    for idx, has_ink in enumerate(rows):
+        if has_ink and start is None:
+            start = idx
+        elif not has_ink and start is not None:
+            bands.append((start, idx))
+            start = None
+    if start is not None:
+        bands.append((start, len(rows)))
+    if len(bands) < 2:
+        return stroke
+
+    heights = [end - start for start, end in bands]
+    major_h = max(heights)
+    if major_h < max(6, int(round(0.25 * h))):
+        return stroke
+
+    out = stroke.copy()
+    thin_limit = max(3, int(round(0.32 * major_h)))
+    for start, end in bands:
+        band_h = end - start
+        if band_h > thin_limit:
+            continue
+        ys, xs = np.where(stroke[start:end] > 0)
+        if len(xs) == 0:
+            continue
+        span = int(xs.max() - xs.min() + 1)
+        if span >= max(16, int(round(0.18 * w))):
+            out[start:end, :] = 0
+    return out
+
+
 # =============================================================================
 # Erasure (the main work)
 #
@@ -437,7 +552,10 @@ def erase_text(
        stroke colour. Pixels close to that median (per-channel diff
        <=40) are the text strokes; everything else (a contrasting icon
        pixel that happened to fall inside the OCR rectangle) is kept.
-    4. Dilate the stroke mask by 1 px to cover antialiased fringe that
+    4. When OCR emitted per-word/per-character boxes, constrain the mask
+       to those geometry boxes so same-colour borders or connector lines
+       in the broader OCR line bbox survive.
+    5. Dilate the stroke mask by 1 px to cover antialiased fringe that
        sits just below the colour threshold, then paint only those
        pixels with bg.
 
@@ -503,6 +621,7 @@ def erase_text(
             text_to_remove.append(it)
 
     dilate_k = np.ones((3, 3), np.uint8)
+    scale = h / 720.0
     # OCR bboxes are tight on the glyphs but often miss the last 1-2 px
     # of the descender / underline / bottom row. Expand the processing
     # window by 2 px on every side so those edge pixels go through the
@@ -526,13 +645,18 @@ def erase_text(
             continue
         bg = fill_color(img, ox1, oy1, ox2, oy2).astype(float)
         region = img[y1:y2, x1:x2]
+        guard = _text_geometry_guard_mask(item, x1, y1, x2, y2, scale)
         diff_bg = np.abs(region.astype(int) - bg.astype(int)).max(axis=2)
         non_bg = diff_bg > 30
         if int(non_bg.sum()) < 4:
             # Almost no strokes found. Either bg estimate was wrong or
-            # text is invisible against bg — fall back to flat bbox fill.
-            out[y1:y2, x1:x2] = bg.astype(np.uint8)
-            mask[y1:y2, x1:x2] = 255
+            # text is invisible against bg — fall back to a guarded fill
+            # when OCR sub-boxes are available, otherwise the old bbox
+            # fill fallback.
+            paint = guard if guard is not None else np.ones(
+                region.shape[:2], dtype=bool)
+            out[y1:y2, x1:x2][paint] = bg.astype(np.uint8)
+            mask[y1:y2, x1:x2][paint] = 255
             continue
         # Multi-colour text detection: a single OCR bbox can carry glyphs
         # of more than one colour. Quantise the non-bg pixels into
@@ -596,13 +720,25 @@ def erase_text(
             core = (t >= 0.18) & (perp_dist < 35)
             fade = (t >= 0.06) & (perp_dist < 50)
             stroke |= core | fade
+        has_guard = guard is not None
+        if has_guard:
+            # Inside Paddle's word/char boxes, be more aggressive than the
+            # colour-axis test: antialiased glyph edges often drift off the
+            # main bg→text vector and otherwise remain as faint residue.
+            stroke = (stroke | ((diff_bg > 12) & guard)) & guard
         stroke = stroke.astype(np.uint8)
+        if not has_guard:
+            stroke = _drop_thin_non_text_row_bands(stroke, item_text)
         # A light dilation absorbs sub-pixel antialias that lives below
         # the t=0.06 threshold. Short numeric bboxes often sit next to
         # icons/arrows, so keep their dilation tighter to avoid collateral
         # erasure of neighbouring visuals.
         stroke = cv2.dilate(stroke, dilate_k,
                             iterations=1 if is_short_text else 2)
+        if has_guard:
+            stroke = (stroke.astype(bool) & guard).astype(np.uint8)
+        else:
+            stroke = _drop_thin_non_text_row_bands(stroke, item_text)
         if is_short_text:
             stroke_before_filter = stroke.copy()
             stroke, review_records = _filter_short_text_stroke_components(

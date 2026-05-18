@@ -110,7 +110,7 @@ python scripts/build_deck.py \
   --work-dir "$RUN"
 ```
 
-If `build_deck.py` reports uncertain OCR entries, open `ocr/page_NN.ocr_review.annotated.png` to inspect the highlighted text, edit `corrected_text` in the corresponding `ocr_review.json`, then rerun the last two steps.
+If `build_deck.py` reports uncertain OCR entries, open `ocr/page_NN.ocr_review.annotated.png` to inspect the highlighted text, edit `corrected_text` in the corresponding `ocr_review.json`, then rerun the last two steps. By default, when `--skip-render` is not used, `build_deck.py` first renders text-only calibration previews to adjust font sizes, then runs multiple passes to adjust text box positions.
 
 ## Common Options
 
@@ -126,7 +126,10 @@ python scripts/build_deck.py --icon-review ...
 ```
 
 - `--pages`: process only selected pages.
-- `--skip-render`: skip LibreOffice preview rendering.
+- `--skip-render`: skip LibreOffice preview rendering and the default text calibration.
+- `--skip-calibration`: skip preview-based text size and position calibration only.
+- `--font-calibration-iterations 1`: set font-size calibration passes.
+- `--calibration-iterations 4`: set text position calibration passes.
 - `--detect-tables`: try to rebuild regular tables as native PowerPoint tables.
 - `--icon-review` / `--icon-decisions`: export icon/text boundary review packets for manual checks.
 

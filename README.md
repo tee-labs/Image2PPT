@@ -116,6 +116,7 @@ python scripts/build_deck.py \
 ```
 
 如果 `build_deck.py` 提示有 OCR 不确定项，可以打开 `ocr/page_NN.ocr_review.annotated.png` 检查高亮文字，修改对应 `ocr_review.json` 的 `corrected_text` 后重新运行后两步。
+默认情况下，只要没有使用 `--skip-render`，`build_deck.py` 会先渲染文字校准预览来校准字号，再多轮渲染校准文本框位置。
 
 ## 常用参数
 
@@ -131,7 +132,10 @@ python scripts/build_deck.py --icon-review ...
 ```
 
 - `--pages`：只处理指定页。
-- `--skip-render`：跳过 LibreOffice 预览渲染。
+- `--skip-render`：跳过 LibreOffice 预览渲染；默认的文字校准也会随之跳过。
+- `--skip-calibration`：只跳过基于预览的字号与位置校准。
+- `--font-calibration-iterations 1`：设置字号校准迭代次数。
+- `--calibration-iterations 4`：设置文本位置校准迭代次数。
 - `--detect-tables`：尝试把规则表格还原为 PPT 原生表格。
 - `--icon-review` / `--icon-decisions`：导出图标/文字边界判断包，便于人工复核。
 

@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=1280, height=960, initial-scale=1.0">
+  <title>为什么需要 DeckWeaver</title>
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      margin: 0;
+      width: 1280px;
+      height: 960px;
+      background: #ffffff;
+    }
+
+    body {
+      margin: 0;
+      width: 1280px;
+      height: 960px;
+      overflow: hidden;
+      font-family: -apple-system, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+      color: #1F2937;
+      background:
+        linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+    }
+
+    .slide {
+      position: relative;
+      width: 1280px;
+      height: 960px;
+      padding: 68px 80px 58px;
+      overflow: hidden;
+    }
+
+    .slide::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      background-image:
+        linear-gradient(rgba(148, 163, 184, 0.08) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(148, 163, 184, 0.08) 1px, transparent 1px);
+      background-size: 44px 44px;
+      mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.75), rgba(0, 0, 0, 0.06));
+    }
+
+    .title {
+      position: relative;
+      margin: 0;
+      font-size: 56px;
+      line-height: 1.14;
+      font-weight: 700;
+      letter-spacing: 0;
+      color: #1F2937;
+    }
+
+    .accent-bar {
+      position: relative;
+      width: 120px;
+      height: 4px;
+      margin-top: 24px;
+      border-radius: 999px;
+      background: #3B82F6;
+    }
+
+    .columns {
+      position: relative;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 40px;
+      margin-top: 58px;
+      width: 1120px;
+    }
+
+    .card {
+      position: relative;
+      min-height: 572px;
+      padding: 52px 54px 46px;
+      border-radius: 28px;
+      overflow: hidden;
+      box-shadow:
+        0 24px 60px rgba(15, 23, 42, 0.08),
+        0 2px 8px rgba(15, 23, 42, 0.04);
+    }
+
+    .card::before {
+      content: "";
+      position: absolute;
+      top: -120px;
+      right: -100px;
+      width: 280px;
+      height: 280px;
+      border-radius: 50%;
+      opacity: 0.34;
+    }
+
+    .card::after {
+      content: "";
+      position: absolute;
+      right: 36px;
+      bottom: 36px;
+      width: 132px;
+      height: 132px;
+      border-radius: 32px;
+      transform: rotate(12deg);
+      opacity: 0.13;
+    }
+
+    .traditional {
+      background: #FEF2F2;
+      border: 1px solid #FECACA;
+    }
+
+    .traditional::before {
+      background: #F87171;
+    }
+
+    .traditional::after {
+      border: 12px solid #EF4444;
+    }
+
+    .deckweaver {
+      background: #ECFDF5;
+      border: 1px solid #A7F3D0;
+    }
+
+    .deckweaver::before {
+      background: #34D399;
+    }
+
+    .deckweaver::after {
+      border: 12px solid #10B981;
+    }
+
+    .card-inner {
+      position: relative;
+      z-index: 1;
+    }
+
+    .card-header {
+      display: flex;
+      align-items: center;
+      gap: 18px;
+      margin-bottom: 46px;
+    }
+
+    .status-icon {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex: 0 0 auto;
+      width: 58px;
+      height: 58px;
+      border-radius: 18px;
+      font-size: 34px;
+      line-height: 1;
+      font-weight: 800;
+      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.65);
+    }
+
+    .traditional .status-icon {
+      color: #DC2626;
+      background: #FEE2E2;
+    }
+
+    .deckweaver .status-icon {
+      color: #059669;
+      background: #D1FAE5;
+    }
+
+    .card-title {
+      font-size: 38px;
+      line-height: 1.2;
+      font-weight: 700;
+      letter-spacing: 0;
+      color: #111827;
+    }
+
+    .bullet-list {
+      display: grid;
+      gap: 28px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .bullet-list li {
+      display: grid;
+      grid-template-columns: 14px 1fr;
+      gap: 18px;
+      align-items: start;
+      font-size: 27px;
+      line-height: 1.42;
+      font-weight: 500;
+      color: #374151;
+      letter-spacing: 0;
+    }
+
+    .dot {
+      width: 11px;
+      height: 11px;
+      margin-top: 13px;
+      border-radius: 50%;
+    }
+
+    .traditional .dot {
+      background: #EF4444;
+      box-shadow: 0 0 0 5px rgba(239, 68, 68, 0.12);
+    }
+
+    .deckweaver .dot {
+      background: #10B981;
+      box-shadow: 0 0 0 5px rgba(16, 185, 129, 0.12);
+    }
+
+    .caption {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 44px;
+      text-align: center;
+      font-size: 20px;
+      line-height: 1.4;
+      font-weight: 400;
+      letter-spacing: 0;
+      color: #9CA3AF;
+    }
+  </style>
+</head>
+<body>
+  <main class="slide" aria-label="为什么需要 DeckWeaver 对比示意">
+    <h1 class="title">为什么需要 DeckWeaver</h1>
+    <div class="accent-bar"></div>
+
+    <section class="columns" aria-label="传统方式与 DeckWeaver 对比">
+      <article class="card traditional">
+        <div class="card-inner">
+          <div class="card-header">
+            <span class="status-icon" aria-hidden="true">✗</span>
+            <div class="card-title">传统方式</div>
+          </div>
+          <ul class="bullet-list">
+            <li><span class="dot" aria-hidden="true"></span><span>截图无法编辑，只能重新做</span></li>
+            <li><span class="dot" aria-hidden="true"></span><span>文字、图标都被压平成像素</span></li>
+            <li><span class="dot" aria-hidden="true"></span><span>修改一个字都要回到原稿</span></li>
+            <li><span class="dot" aria-hidden="true"></span><span>PPT 协作时无法替换内容</span></li>
+          </ul>
+        </div>
+      </article>
+
+      <article class="card deckweaver">
+        <div class="card-inner">
+          <div class="card-header">
+            <span class="status-icon" aria-hidden="true">✓</span>
+            <div class="card-title">DeckWeaver</div>
+          </div>
+          <ul class="bullet-list">
+            <li><span class="dot" aria-hidden="true"></span><span>所有文字还原为可编辑文本框</span></li>
+            <li><span class="dot" aria-hidden="true"></span><span>图标、Logo 拆成独立图片对象</span></li>
+            <li><span class="dot" aria-hidden="true"></span><span>本地 OCR，无需上传云端</span></li>
+            <li><span class="dot" aria-hidden="true"></span><span>支持 PNG / JPG / WebP / TIFF</span></li>
+          </ul>
+        </div>
+      </article>
+    </section>
+
+    <div class="caption">对比示意，实际效果依赖源图质量</div>
+  </main>
+</body>
+</html>

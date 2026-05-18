@@ -1,0 +1,30 @@
+{
+  "name": "dark_features_grid",
+  "description": "Dark 2x3 grid of feature cards with icons, highlight numbers and short captions.",
+  "background": "dark",
+  "size": {
+    "width": 1600,
+    "height": 1200
+  },
+  "must_appear_text": [
+    "核心特性",
+    "本地运行",
+    "Token",
+    "速度提升",
+    "支持格式",
+    "可编辑",
+    "开源"
+  ],
+  "expected_image_objects": {
+    "min": 0,
+    "max": 12
+  },
+  "expected_textboxes": {
+    "min": 15,
+    "max": 30
+  },
+  "tags": [
+    "dark",
+    "grid"
+  ]
+}

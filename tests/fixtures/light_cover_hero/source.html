@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=1920, height=1080, initial-scale=1.0">
+  <title>DeckWeaver</title>
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      margin: 0;
+      padding: 0;
+      width: 1920px;
+      height: 1080px;
+      overflow: hidden;
+      background: #F7F8FA;
+    }
+
+    body {
+      margin: 0;
+      width: 1920px;
+      height: 1080px;
+      overflow: hidden;
+      background: #F7F8FA;
+      font-family: -apple-system, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+      color: #1E2A44;
+      position: relative;
+    }
+
+    .logo {
+      position: absolute;
+      top: 76px;
+      left: 92px;
+      width: 92px;
+      height: 92px;
+      border-radius: 20px;
+      background: #1E2A44;
+      color: #FFFFFF;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 34px;
+      font-weight: 800;
+      letter-spacing: 0;
+      line-height: 1;
+    }
+
+    .hero {
+      position: absolute;
+      left: 220px;
+      top: 383px;
+      width: 820px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 140px;
+      font-weight: 800;
+      line-height: 1;
+      letter-spacing: 0;
+      color: #1E2A44;
+    }
+
+    .subtitle {
+      margin: 34px 0 0;
+      font-size: 52px;
+      font-weight: 500;
+      line-height: 1.22;
+      letter-spacing: 0;
+      color: #4A5568;
+    }
+
+    .tagline {
+      margin: 28px 0 0;
+      font-size: 28px;
+      font-weight: 500;
+      line-height: 1.25;
+      letter-spacing: 0;
+      color: #3B82F6;
+    }
+
+    .shape-circle {
+      position: absolute;
+      left: 1110px;
+      top: 246px;
+      width: 286px;
+      height: 286px;
+      border-radius: 143px;
+      background: #3B82F6;
+    }
+
+    .shape-square {
+      position: absolute;
+      left: 1494px;
+      top: 178px;
+      width: 288px;
+      height: 288px;
+      border-radius: 52px;
+      background: #8B5CF6;
+    }
+
+    .shape-triangle {
+      position: absolute;
+      left: 1250px;
+      top: 650px;
+      width: 352px;
+      height: 304px;
+      display: block;
+    }
+
+    .badge {
+      position: absolute;
+      right: 82px;
+      bottom: 64px;
+      margin: 0;
+      font-size: 22px;
+      font-weight: 500;
+      line-height: 1.2;
+      letter-spacing: 0;
+      color: #94A3B8;
+    }
+  </style>
+</head>
+<body>
+  <div class="logo">DW</div>
+
+  <main class="hero" aria-label="DeckWeaver cover">
+    <h1>DeckWeaver</h1>
+    <p class="subtitle">把图片重建为可编辑 PPT</p>
+    <p class="tagline">Local OCR · 零云端 API · 极低 Token 消耗</p>
+  </main>
+
+  <div class="shape-circle" aria-hidden="true"></div>
+  <div class="shape-square" aria-hidden="true"></div>
+  <svg class="shape-triangle" viewBox="0 0 352 304" aria-hidden="true" focusable="false">
+    <polygon points="176,0 352,304 0,304" fill="#F87171"></polygon>
+  </svg>
+
+  <p class="badge">v1.0 · 2026</p>
+</body>
+</html>

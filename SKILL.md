@@ -91,7 +91,8 @@ steps. `prepare_ocr.py` loads PaddleOCR once, runs OCR across all pages, builds
 review packets for uncertain entries, and pre-fills `corrected_text`
 with local consensus picks. `ocr_review_apply.py` merges those picks into
 the OCR JSON files. `build_deck.py` runs erase, inventory extraction,
-layout generation, deck assembly, QA inspection, and preview rendering.
+layout generation, deck assembly, preview-based font-size calibration,
+preview-based text position calibration, QA inspection, and preview rendering.
 
 ## Optional Review
 
@@ -112,7 +113,11 @@ python scripts/build_deck.py --source-dir "$SRC" --work-dir "$RUN"
 ## Useful Flags
 
 - `--pages 1,4,8`: process only selected pages.
-- `--skip-render`: skip LibreOffice preview generation.
+- `--skip-render`: skip LibreOffice preview generation and default text
+  calibration.
+- `--skip-calibration`: skip preview-based text size/position calibration.
+- `--font-calibration-iterations 1`: set font-size calibration passes.
+- `--calibration-iterations 4`: set text position calibration passes.
 - `--detect-tables`: enable optional native table reconstruction.
 - `--icon-review`: emit icon-vs-text review packets.
 - `--icon-decisions`: apply filled icon review decisions on a rerun.

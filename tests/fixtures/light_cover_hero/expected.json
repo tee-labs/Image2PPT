@@ -1,0 +1,27 @@
+{
+  "name": "light_cover_hero",
+  "description": "Light-themed product cover with hero title, subtitle, logo and decorative shapes.",
+  "background": "light",
+  "size": {
+    "width": 1920,
+    "height": 1080
+  },
+  "must_appear_text": [
+    "DeckWeaver",
+    "可编辑 PPT",
+    "Local OCR",
+    "v1.0"
+  ],
+  "expected_image_objects": {
+    "min": 1,
+    "max": 6
+  },
+  "expected_textboxes": {
+    "min": 3,
+    "max": 8
+  },
+  "tags": [
+    "light",
+    "cover"
+  ]
+}

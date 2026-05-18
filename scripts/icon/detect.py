@@ -18,6 +18,135 @@ import cv2
 import numpy as np
 
 
+def _sample_local_bg(
+    crop: np.ndarray,
+    x1: int,
+    y1: int,
+    x2: int,
+    y2: int,
+    fallback: np.ndarray,
+    scale: float,
+) -> np.ndarray:
+    """Sample the background immediately around a child bbox.
+
+    Parent crops can span multiple visual zones (blue title bar plus pale
+    rows, red callout plus white slide background, etc.). Using the parent
+    edge colour to erase a child icon leaves obvious white/pink blocks. The
+    local ring around the child is the colour we actually need for patching.
+    """
+    h, w = crop.shape[:2]
+    pad = max(2, int(round(5 * scale)))
+    ex1 = max(0, x1 - pad)
+    ey1 = max(0, y1 - pad)
+    ex2 = min(w, x2 + pad)
+    ey2 = min(h, y2 + pad)
+    if ex2 <= ex1 or ey2 <= ey1:
+        return fallback.astype(np.uint8)
+
+    region = crop[ey1:ey2, ex1:ex2]
+    ring = np.ones(region.shape[:2], dtype=bool)
+    ix1, iy1 = x1 - ex1, y1 - ey1
+    ix2, iy2 = x2 - ex1, y2 - ey1
+    ring[max(0, iy1):min(region.shape[0], iy2),
+         max(0, ix1):min(region.shape[1], ix2)] = False
+    pixels = region[ring]
+    if len(pixels) < max(12, int(round(20 * scale * scale))):
+        return fallback.astype(np.uint8)
+    flat = pixels.reshape(-1, 3).astype(np.uint8)
+    # Use the dominant quantized colour rather than the raw median. Rings
+    # around icon badges often contain two colours (badge fill + host card);
+    # the median can land between them, while the dominant bucket tracks the
+    # actual local background we should erase back to.
+    quant = (flat.astype(np.uint16) // 16).astype(np.uint8)
+    keys, counts = np.unique(quant, axis=0, return_counts=True)
+    if len(keys) == 0:
+        return fallback.astype(np.uint8)
+    key = keys[int(np.argmax(counts))]
+    cluster = flat[(quant == key).all(axis=1)]
+    if len(cluster) < max(6, int(0.08 * len(flat))):
+        cluster = flat
+    return np.median(cluster.reshape(-1, 3), axis=0).astype(np.uint8)
+
+
+def _line_visual_support(
+    crop: np.ndarray,
+    shape_mask: np.ndarray,
+    x: int,
+    y: int,
+    w_: int,
+    h_: int,
+    fallback_bg: np.ndarray,
+    scale: float,
+) -> tuple[tuple[int, int, int, int], np.ndarray, np.ndarray]:
+    """Grow a line-art seed to the local visible foreground island.
+
+    The seed component usually captures coloured strokes. The actual icon
+    may also include a filled badge, warning triangle, or other island that
+    differs from the local background. Segment that foreground in a bounded
+    local window and keep only components overlapping the seed.
+    """
+    ch, cw = crop.shape[:2]
+    pad = max(8, int(round(20 * scale)))
+    wx1 = max(0, x - pad)
+    wy1 = max(0, y - pad)
+    wx2 = min(cw, x + w_ + pad)
+    wy2 = min(ch, y + h_ + pad)
+    if wx2 <= wx1 or wy2 <= wy1:
+        empty = np.zeros_like(shape_mask, dtype=bool)
+        empty[y:y + h_, x:x + w_] = shape_mask[y:y + h_, x:x + w_]
+        return (x, y, x + w_, y + h_), empty, fallback_bg.astype(np.uint8)
+
+    local_bg = _sample_local_bg(crop, x, y, x + w_, y + h_,
+                                fallback_bg, scale)
+    win = crop[wy1:wy2, wx1:wx2]
+    local_seed = shape_mask[wy1:wy2, wx1:wx2]
+    gray = cv2.cvtColor(win, cv2.COLOR_BGR2GRAY)
+    hsv = cv2.cvtColor(win, cv2.COLOR_BGR2HSV)
+    diff = np.abs(win.astype(np.int16) - local_bg.astype(np.int16)).max(axis=2)
+    fg = (
+        (diff > 18)
+        & ((hsv[:, :, 1] > 12) | (gray < 245) | (gray > 248))
+    ) | local_seed
+    fg = cv2.morphologyEx(
+        fg.astype(np.uint8) * 255,
+        cv2.MORPH_CLOSE,
+        np.ones((3, 3), np.uint8),
+        iterations=1,
+    ) > 0
+
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(
+        fg.astype(np.uint8), 8)
+    visual_local = np.zeros_like(fg, dtype=bool)
+    seed_count = max(1, int(local_seed.sum()))
+    max_area = max(80, int(4.0 * max(1, w_ * h_)))
+    max_w = max(18, int(2.5 * max(1, w_)))
+    max_h = max(18, int(2.5 * max(1, h_)))
+    for i in range(1, n):
+        cx, cy, ww, hh, area = (int(v) for v in stats[i])
+        if area > max_area or ww > max_w or hh > max_h:
+            continue
+        component = labels == i
+        overlap = int((component & local_seed).sum())
+        if overlap < max(3, int(0.04 * seed_count)):
+            continue
+        visual_local |= component
+
+    if int(visual_local.sum()) < max(4, int(0.25 * seed_count)):
+        visual_local = local_seed.copy()
+
+    visual = np.zeros_like(shape_mask, dtype=bool)
+    visual[wy1:wy2, wx1:wx2] = visual_local
+    ys, xs = np.where(visual)
+    if len(xs) == 0:
+        return (x, y, x + w_, y + h_), visual, local_bg
+    pad_bbox = max(1, int(round(2 * scale)))
+    rx1 = max(0, int(xs.min()) - pad_bbox)
+    ry1 = max(0, int(ys.min()) - pad_bbox)
+    rx2 = min(cw, int(xs.max()) + 1 + pad_bbox)
+    ry2 = min(ch, int(ys.max()) + 1 + pad_bbox)
+    return (rx1, ry1, rx2, ry2), visual, local_bg
+
+
 def detect_internal_shapes(
     source: np.ndarray,
     px1: int,
@@ -299,7 +428,7 @@ def detect_white_subicons(
                          int(px1 + rx2), int(py1 + ry2)))
         # Fill the icon's padded bbox with the parent's solid colour so
         # the parent card's downstream asset crop comes out icon-free.
-        rect_mask = np.zeros_like(wlabels, dtype=bool)
+        rect_mask = np.zeros((ch, cw), dtype=bool)
         rect_mask[ry1:ry2, rx1:rx2] = True
         fill_jobs.append((rect_mask, parent_color))
     return subicons, fill_jobs
@@ -409,19 +538,18 @@ def detect_line_art_subicons(
             continue
         kept.append((x, y, x + w_, y + h_))
 
-        pad = max(1, int(round(3 * scale)))
-        rx1 = max(0, x - pad)
-        ry1 = max(0, y - pad)
-        rx2 = min(cw, x + w_ + pad)
-        ry2 = min(ch, y + h_ + pad)
+        (rx1, ry1, rx2, ry2), visual_mask, local_bg = _line_visual_support(
+            crop, shape_mask, x, y, w_, h_, bg.astype(np.uint8), scale)
         subicons.append((int(px1 + rx1), int(py1 + ry1),
                          int(px1 + rx2), int(py1 + ry2)))
 
-        # Dilation iterations scale with image height so the inpainted
-        # halo around an extracted stroke stays proportional.
-        dilate_iters = max(1, int(round(1 * scale)))
-        stroke_mask = cv2.dilate(shape_mask.astype(np.uint8),
-                                 np.ones((3, 3), np.uint8),
-                                 iterations=dilate_iters).astype(bool)
-        fill_jobs.append((stroke_mask, bg.astype(np.uint8)))
+        # Patch the actual visible foreground support with the LOCAL
+        # background. This removes filled badges and line strokes from the
+        # parent without painting a rectangular block over row/card details.
+        fill_mask = cv2.dilate(
+            visual_mask.astype(np.uint8),
+            np.ones((3, 3), np.uint8),
+            iterations=max(1, int(round(1 * scale))),
+        ).astype(bool)
+        fill_jobs.append((fill_mask, local_bg))
     return subicons, fill_jobs

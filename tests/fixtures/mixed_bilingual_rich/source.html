@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=1600, height=900, initial-scale=1.0">
+  <title>中英文混排示例</title>
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      width: 1600px;
+      height: 900px;
+      overflow: hidden;
+      font-family: -apple-system, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+      background: #EEF2FF;
+      color: #1E293B;
+    }
+
+    .slide {
+      position: relative;
+      width: 1600px;
+      height: 900px;
+      background: #EEF2FF;
+    }
+
+    .title {
+      position: absolute;
+      left: 112px;
+      top: 78px;
+    }
+
+    .title-cn {
+      margin: 0;
+      font-size: 52px;
+      line-height: 1.12;
+      font-weight: 700;
+      letter-spacing: 0;
+      color: #1E293B;
+    }
+
+    .title-en {
+      margin: 11px 0 0 2px;
+      font-size: 32px;
+      line-height: 1.16;
+      font-weight: 500;
+      font-style: italic;
+      letter-spacing: 0;
+      color: #4F46E5;
+    }
+
+    .wordmark {
+      position: absolute;
+      right: 86px;
+      top: 72px;
+      width: 40px;
+      height: 40px;
+      border-radius: 12px;
+      background: #1E2A44;
+      color: #FFFFFF;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 15px;
+      line-height: 1;
+      font-weight: 800;
+      letter-spacing: 0;
+    }
+
+    .quote-card {
+      position: absolute;
+      left: 112px;
+      top: 244px;
+      width: 760px;
+      height: 296px;
+      border-radius: 18px;
+      background: #FFFFFF;
+      border: 1px solid #E2E8F0;
+      padding: 42px 52px 34px 62px;
+    }
+
+    .quote-mark {
+      position: absolute;
+      left: 40px;
+      top: 18px;
+      height: 88px;
+      color: #4F46E5;
+      font-size: 80px;
+      line-height: 1;
+      font-weight: 700;
+    }
+
+    .quote-copy {
+      margin: 68px 0 0 0;
+      color: #1E293B;
+      font-size: 30px;
+      line-height: 1.42;
+      font-weight: 600;
+      letter-spacing: 0;
+    }
+
+    .quote-copy p {
+      margin: 0;
+    }
+
+    .attribution {
+      margin-top: 24px;
+      color: #6B7280;
+      font-size: 20px;
+      line-height: 1.3;
+      font-weight: 500;
+      letter-spacing: 0;
+    }
+
+    .screenshots {
+      position: absolute;
+      right: 156px;
+      top: 218px;
+      width: 380px;
+      height: 432px;
+    }
+
+    .shot-card {
+      position: absolute;
+      right: 0;
+      width: 320px;
+      height: 180px;
+      border-radius: 18px;
+      border: 1px solid #CBD5E1;
+      background: #F8FAFC;
+      overflow: hidden;
+    }
+
+    .shot-card.first {
+      top: 0;
+    }
+
+    .shot-card.second {
+      top: 218px;
+      right: 60px;
+    }
+
+    .shot-label {
+      position: absolute;
+      left: 18px;
+      top: 16px;
+      height: 28px;
+      color: #1E293B;
+      font-size: 18px;
+      line-height: 28px;
+      font-weight: 700;
+      letter-spacing: 0;
+    }
+
+    .browser-line {
+      position: absolute;
+      left: 0;
+      top: 54px;
+      width: 320px;
+      height: 1px;
+      background: #CBD5E1;
+    }
+
+    .dot {
+      position: absolute;
+      top: 23px;
+      width: 8px;
+      height: 8px;
+      border-radius: 4px;
+    }
+
+    .dot.one {
+      right: 50px;
+      background: #4F46E5;
+    }
+
+    .dot.two {
+      right: 34px;
+      background: #64748B;
+    }
+
+    .dot.three {
+      right: 18px;
+      background: #CBD5E1;
+    }
+
+    .shot-svg {
+      position: absolute;
+      left: 24px;
+      top: 74px;
+      width: 272px;
+      height: 78px;
+    }
+
+    .bullets {
+      position: absolute;
+      left: 112px;
+      top: 600px;
+      width: 1018px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      column-gap: 78px;
+    }
+
+    .bullet-section h2 {
+      margin: 0 0 22px 0;
+      color: #1E293B;
+      font-size: 28px;
+      line-height: 1.18;
+      font-weight: 700;
+      letter-spacing: 0;
+    }
+
+    .bullet-section ul {
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .bullet-section li {
+      position: relative;
+      margin: 0 0 17px 0;
+      padding-left: 28px;
+      color: #334155;
+      font-size: 22px;
+      line-height: 1.32;
+      font-weight: 500;
+      letter-spacing: 0;
+    }
+
+    .bullet-section li::before {
+      content: "•";
+      position: absolute;
+      left: 0;
+      top: 0;
+      color: #4F46E5;
+      font-size: 24px;
+      line-height: 1.18;
+      font-weight: 800;
+    }
+
+    .footer {
+      position: absolute;
+      left: 0;
+      bottom: 36px;
+      width: 1600px;
+      color: #6B7280;
+      text-align: center;
+      font-size: 20px;
+      line-height: 1.3;
+      font-weight: 500;
+      letter-spacing: 0;
+    }
+  </style>
+</head>
+<body>
+  <main class="slide" aria-label="Bilingual DeckWeaver slide">
+    <header class="title">
+      <h1 class="title-cn">中英文混排示例</h1>
+      <p class="title-en">Bilingual Layouts</p>
+    </header>
+
+    <div class="wordmark" aria-label="DeckWeaver wordmark">DW</div>
+
+    <section class="quote-card" aria-label="Project quote">
+      <div class="quote-mark">“</div>
+      <div class="quote-copy">
+        <p>DeckWeaver 让图片重新变得可编辑。</p>
+        <p>Makes flattened images editable again.</p>
+      </div>
+      <div class="attribution">— Project README, 2026</div>
+    </section>
+
+    <section class="screenshots" aria-label="Product screenshot placeholders">
+      <article class="shot-card first">
+        <div class="shot-label">📸 Source slide</div>
+        <div class="dot one"></div>
+        <div class="dot two"></div>
+        <div class="dot three"></div>
+        <div class="browser-line"></div>
+        <svg class="shot-svg" viewBox="0 0 272 78" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Source slide decoration">
+          <rect x="0" y="0" width="116" height="78" rx="10" fill="#E0E7FF"/>
+          <rect x="134" y="4" width="138" height="12" rx="6" fill="#CBD5E1"/>
+          <rect x="134" y="28" width="112" height="10" rx="5" fill="#E2E8F0"/>
+          <rect x="134" y="50" width="126" height="10" rx="5" fill="#E2E8F0"/>
+          <circle cx="58" cy="39" r="22" fill="#4F46E5"/>
+          <rect x="44" y="34" width="28" height="10" rx="5" fill="#FFFFFF"/>
+        </svg>
+      </article>
+
+      <article class="shot-card second">
+        <div class="shot-label">📑 Reconstructed PPTX</div>
+        <div class="dot one"></div>
+        <div class="dot two"></div>
+        <div class="dot three"></div>
+        <div class="browser-line"></div>
+        <svg class="shot-svg" viewBox="0 0 272 78" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Reconstructed PPTX decoration">
+          <rect x="0" y="0" width="272" height="78" rx="10" fill="#E0E7FF"/>
+          <rect x="18" y="16" width="70" height="46" rx="8" fill="#FFFFFF"/>
+          <rect x="106" y="16" width="148" height="9" rx="4" fill="#4F46E5"/>
+          <rect x="106" y="36" width="128" height="8" rx="4" fill="#CBD5E1"/>
+          <rect x="106" y="54" width="108" height="8" rx="4" fill="#CBD5E1"/>
+          <rect x="32" y="30" width="42" height="6" rx="3" fill="#4F46E5"/>
+          <rect x="32" y="44" width="30" height="6" rx="3" fill="#CBD5E1"/>
+        </svg>
+      </article>
+    </section>
+
+    <section class="bullets" aria-label="Use cases">
+      <div class="bullet-section">
+        <h2>适用场景</h2>
+        <ul>
+          <li>Agent 工作流：直接调用 skill</li>
+          <li>大批量识别：命令行无 token 消耗</li>
+          <li>内部知识库：把图片归档重新可搜</li>
+        </ul>
+      </div>
+      <div class="bullet-section">
+        <h2>Use Cases</h2>
+        <ul>
+          <li>Slide regeneration in AI agents</li>
+          <li>Bulk OCR pipelines (no API cost)</li>
+          <li>Re-editing legacy slide screenshots</li>
+        </ul>
+      </div>
+    </section>
+
+    <footer class="footer">Contact · 1015277323@qq.com · github.com/GuopengLin/Image2PPT</footer>
+  </main>
+</body>
+</html>

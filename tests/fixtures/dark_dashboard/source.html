@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=2560, height=1440, initial-scale=1.0">
+  <title>DeckWeaver 处理流程</title>
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      margin: 0;
+      width: 2560px;
+      height: 1440px;
+      overflow: hidden;
+      background: #0B1220;
+    }
+
+    body {
+      margin: 0;
+      width: 2560px;
+      height: 1440px;
+      overflow: hidden;
+      background: #0B1220;
+      color: #FFFFFF;
+      font-family: -apple-system, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+      position: relative;
+    }
+
+    .slide {
+      position: relative;
+      width: 2560px;
+      height: 1440px;
+      background: #0B1220;
+      overflow: hidden;
+    }
+
+    .header {
+      position: absolute;
+      top: 116px;
+      left: 0;
+      width: 2560px;
+      text-align: center;
+    }
+
+    .title {
+      margin: 0;
+      font-size: 72px;
+      line-height: 1.12;
+      font-weight: 700;
+      color: #FFFFFF;
+      letter-spacing: 0;
+    }
+
+    .subtitle {
+      margin: 22px 0 0;
+      font-size: 32px;
+      line-height: 1.25;
+      font-weight: 500;
+      color: #94A3B8;
+      letter-spacing: 0;
+    }
+
+    .pipeline {
+      position: absolute;
+      left: 130px;
+      top: 426px;
+      width: 2300px;
+      height: 520px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .step-card {
+      width: 392px;
+      height: 430px;
+      padding: 28px;
+      border-radius: 28px;
+      background: #1E293B;
+      border: 2px solid #334155;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      justify-content: flex-start;
+    }
+
+    .badge {
+      width: 60px;
+      height: 60px;
+      border-radius: 30px;
+      background: #3B82F6;
+      color: #FFFFFF;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 34px;
+      line-height: 1;
+      font-weight: 700;
+      margin-bottom: 34px;
+    }
+
+    .badge.search {
+      font-size: 32px;
+    }
+
+    .step-number {
+      margin: 0 0 18px;
+      font-size: 22px;
+      line-height: 1.18;
+      font-weight: 700;
+      color: #22D3EE;
+      letter-spacing: 0;
+    }
+
+    .step-title {
+      margin: 0 0 24px;
+      font-size: 36px;
+      line-height: 1.18;
+      font-weight: 700;
+      color: #FFFFFF;
+      letter-spacing: 0;
+      white-space: nowrap;
+    }
+
+    .step-description {
+      margin: 0;
+      font-size: 22px;
+      line-height: 1.42;
+      font-weight: 500;
+      color: #CBD5E1;
+      letter-spacing: 0;
+    }
+
+    .card-rule {
+      width: 100%;
+      height: 2px;
+      background: #334155;
+      margin: 34px 0 0;
+    }
+
+    .card-foot {
+      display: flex;
+      gap: 10px;
+      margin-top: 26px;
+    }
+
+    .pill {
+      width: 54px;
+      height: 8px;
+      border-radius: 4px;
+      background: #22D3EE;
+    }
+
+    .pill.muted {
+      background: #475569;
+    }
+
+    .chevron {
+      width: 42px;
+      text-align: center;
+      color: #22D3EE;
+      font-size: 58px;
+      line-height: 1;
+      font-weight: 700;
+      letter-spacing: 0;
+      margin: 0 4px;
+    }
+
+    .footer {
+      position: absolute;
+      right: 96px;
+      bottom: 64px;
+      margin: 0;
+      font-size: 22px;
+      line-height: 1.2;
+      font-weight: 500;
+      color: #64748B;
+      letter-spacing: 0;
+    }
+  </style>
+</head>
+<body>
+  <main class="slide" aria-label="DeckWeaver processing pipeline">
+    <header class="header">
+      <h1 class="title">DeckWeaver 处理流程</h1>
+      <p class="subtitle">从一张图片到可编辑 PPTX 的五个步骤</p>
+    </header>
+
+    <section class="pipeline" aria-label="五步处理流程">
+      <article class="step-card">
+        <div class="badge search" aria-hidden="true">🔍︎</div>
+        <p class="step-number">STEP 01</p>
+        <h2 class="step-title">OCR 识别</h2>
+        <p class="step-description">本地多引擎并行识别文字</p>
+        <div class="card-rule"></div>
+        <div class="card-foot" aria-hidden="true">
+          <span class="pill"></span>
+          <span class="pill muted"></span>
+          <span class="pill muted"></span>
+        </div>
+      </article>
+
+      <div class="chevron" aria-hidden="true">›</div>
+
+      <article class="step-card">
+        <div class="badge" aria-hidden="true">⊞</div>
+        <p class="step-number">STEP 02</p>
+        <h2 class="step-title">元素检测</h2>
+        <p class="step-description">切分图标、Logo 和图片对象</p>
+        <div class="card-rule"></div>
+        <div class="card-foot" aria-hidden="true">
+          <span class="pill"></span>
+          <span class="pill"></span>
+          <span class="pill muted"></span>
+        </div>
+      </article>
+
+      <div class="chevron" aria-hidden="true">›</div>
+
+      <article class="step-card">
+        <div class="badge" aria-hidden="true">▤</div>
+        <p class="step-number">STEP 03</p>
+        <h2 class="step-title">布局重建</h2>
+        <p class="step-description">生成 layout JSON 描述</p>
+        <div class="card-rule"></div>
+        <div class="card-foot" aria-hidden="true">
+          <span class="pill"></span>
+          <span class="pill"></span>
+          <span class="pill muted"></span>
+        </div>
+      </article>
+
+      <div class="chevron" aria-hidden="true">›</div>
+
+      <article class="step-card">
+        <div class="badge" aria-hidden="true">⎙</div>
+        <p class="step-number">STEP 04</p>
+        <h2 class="step-title">PPTX 生成</h2>
+        <p class="step-description">组装为可编辑 PowerPoint</p>
+        <div class="card-rule"></div>
+        <div class="card-foot" aria-hidden="true">
+          <span class="pill"></span>
+          <span class="pill"></span>
+          <span class="pill"></span>
+        </div>
+      </article>
+
+      <div class="chevron" aria-hidden="true">›</div>
+
+      <article class="step-card">
+        <div class="badge" aria-hidden="true">✓</div>
+        <p class="step-number">STEP 05</p>
+        <h2 class="step-title">视觉校准</h2>
+        <p class="step-description">渲染预览自动校准字号位置</p>
+        <div class="card-rule"></div>
+        <div class="card-foot" aria-hidden="true">
+          <span class="pill"></span>
+          <span class="pill"></span>
+          <span class="pill"></span>
+        </div>
+      </article>
+    </section>
+
+    <p class="footer">github.com/GuopengLin/Image2PPT</p>
+  </main>
+</body>
+</html>

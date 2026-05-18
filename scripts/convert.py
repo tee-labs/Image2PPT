@@ -45,6 +45,27 @@ def parse_args() -> argparse.Namespace:
         help="Skip LibreOffice preview rendering.",
     )
     p.add_argument(
+        "--calibrate-positions", action="store_true",
+        help="Force preview-based text size/position calibration, even with "
+             "--skip-render.",
+    )
+    p.add_argument(
+        "--skip-calibration", action="store_true",
+        help="Skip preview-based text size/position calibration.",
+    )
+    p.add_argument(
+        "--font-calibration-iterations", type=int, default=None,
+        help="Text font-size calibration iterations.",
+    )
+    p.add_argument(
+        "--calibration-iterations", type=int, default=None,
+        help="Text position calibration iterations.",
+    )
+    p.add_argument(
+        "--calibration-max-shift", type=float, default=30.0,
+        help="Max source-pixel shift per text box per calibration iteration.",
+    )
+    p.add_argument(
         "--detect-tables", action="store_true",
         help="Enable optional native table reconstruction.",
     )
@@ -180,6 +201,19 @@ def main() -> int:
         build_cmd.append("--icon-decisions")
     if args.skip_render:
         build_cmd.append("--skip-render")
+    if args.calibrate_positions:
+        build_cmd.append("--calibrate-positions")
+    if args.skip_calibration:
+        build_cmd.append("--skip-calibration")
+    if args.font_calibration_iterations is not None:
+        build_cmd += ["--font-calibration-iterations",
+                      str(args.font_calibration_iterations)]
+    if args.calibration_iterations is not None:
+        build_cmd += ["--calibration-iterations",
+                      str(args.calibration_iterations)]
+    if args.calibration_max_shift != 30.0:
+        build_cmd += ["--calibration-max-shift",
+                      str(args.calibration_max_shift)]
 
     run(prepare_cmd)
     run(apply_cmd)

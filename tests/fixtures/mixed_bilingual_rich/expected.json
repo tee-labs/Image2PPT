@@ -1,0 +1,29 @@
+{
+  "name": "mixed_bilingual_rich",
+  "description": "Bilingual slide with quote block, mixed CN/EN bullets, decorative images and footer.",
+  "background": "light",
+  "size": {
+    "width": 1600,
+    "height": 900
+  },
+  "must_appear_text": [
+    "中英文混排示例",
+    "Bilingual Layouts",
+    "DeckWeaver",
+    "可编辑",
+    "Use Cases",
+    "1015277323@qq.com"
+  ],
+  "expected_image_objects": {
+    "min": 0,
+    "max": 8
+  },
+  "expected_textboxes": {
+    "min": 10,
+    "max": 25
+  },
+  "tags": [
+    "gradient",
+    "bilingual"
+  ]
+}

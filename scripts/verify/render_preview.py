@@ -29,6 +29,12 @@ import subprocess
 import sys
 from pathlib import Path
 
+SCRIPTS_ROOT = Path(__file__).resolve().parents[1]
+if str(SCRIPTS_ROOT) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_ROOT))
+
+from fontconfig_helper import fontconfig_env  # noqa: E402
+
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="PPTX → PDF → per-page PNG previews.")
@@ -81,6 +87,7 @@ def main() -> int:
         [soffice, "--headless", "--convert-to", "pdf",
          "--outdir", str(out_dir), str(pptx)],
         check=True,
+        env=fontconfig_env(),
     )
     pdf_path = out_dir / (pptx.stem + ".pdf")
     if not pdf_path.exists():

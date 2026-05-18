@@ -35,6 +35,7 @@ Flags forwarded to run_pipeline:
 Stage skip flags (when iterating):
     --skip-pipeline         skip stage 1 (already-built layouts)
     --skip-render           skip stage 5 (no LibreOffice / preview need)
+    --skip-calibration      skip preview-based text size/position calibration
 """
 from __future__ import annotations
 
@@ -79,6 +80,20 @@ def parse_args() -> argparse.Namespace:
                    help="Skip stage 1 (use existing per-page layouts).")
     p.add_argument("--skip-render", action="store_true",
                    help="Skip stage 5 (no preview PNGs produced).")
+    p.add_argument("--calibrate-positions", dest="calibrate_text",
+                   action="store_true", default=None,
+                   help="Force preview-based closed-loop text "
+                        "calibration, even with --skip-render.")
+    p.add_argument("--skip-calibration", dest="calibrate_text",
+                   action="store_false",
+                   help="Skip preview-based text size/position calibration.")
+    p.add_argument("--font-calibration-iterations", type=int, default=1,
+                   help="Text font-size calibration iterations (default: 1).")
+    p.add_argument("--calibration-iterations", type=int, default=4,
+                   help="Text position calibration iterations (default: 4).")
+    p.add_argument("--calibration-max-shift", type=float, default=30.0,
+                   help="Max source-pixel shift per text box per calibration "
+                        "iteration (default: 30).")
     return p.parse_args()
 
 
@@ -93,6 +108,7 @@ def main() -> int:
     layouts_dir = work / "layouts"
     combined_path = layouts_dir / "combined.layout.json"
     pptx_path = work / "slides.pptx"
+    draft_pptx_path = work / "slides.draft.pptx"
     qa_path = work / "qa.json"
     previews_dir = work / "previews"
     work.mkdir(parents=True, exist_ok=True)
@@ -145,21 +161,133 @@ def main() -> int:
     print(r.stdout.strip())
     print(f"  stage 2 done in {time.time() - ts:.1f}s", flush=True)
 
+    # ---- Stage 2b: structural text-slot classes ----
+    banner("2b/5  classify_text_slots")
+    ts = time.time()
+    slot_report = work / "debug" / "text_slot_classes.json"
+    r = subprocess.run(
+        [sys.executable,
+         str(SCRIPTS_ROOT / "deck" / "classify_text_slots.py"),
+         "--layout", str(combined_path),
+         "--out", str(slot_report),
+         "--apply",
+         "--min-group-size", "2",
+         "--min-apply-size", "3"],
+        check=True, capture_output=True, text=True,
+    )
+    if r.stdout.strip():
+        print(r.stdout.strip())
+    print(f"  -> {slot_report}")
+    print(f"  stage 2b done in {time.time() - ts:.1f}s", flush=True)
+
+    should_calibrate = (
+        (not args.skip_render)
+        if args.calibrate_text is None else args.calibrate_text
+    )
+
     # ---- Stage 3: build_pptx_from_layout ----
     banner("3/5  build_pptx_from_layout")
     ts = time.time()
+    stage3_pptx_path = draft_pptx_path if should_calibrate else pptx_path
     r = subprocess.run(
         [sys.executable,
          str(SCRIPTS_ROOT / "deck" / "build_pptx_from_layout.py"),
          "--layout", str(combined_path),
          "--assets-root", str(work),
-         "--out", str(pptx_path)],
+         "--out", str(stage3_pptx_path)],
         check=True, capture_output=True, text=True,
     )
     if r.stdout.strip():
         print(r.stdout.strip())
-    print(f"  -> {pptx_path}")
+    print(f"  -> {stage3_pptx_path}")
     print(f"  stage 3 done in {time.time() - ts:.1f}s", flush=True)
+
+    # ---- Stage 3b/3c: closed-loop text calibration ----
+    if should_calibrate:
+        banner("3b/5  calibrate_text_sizes")
+        ts = time.time()
+        r = subprocess.run(
+            [sys.executable,
+             str(SCRIPTS_ROOT / "deck" / "calibrate_text_sizes.py"),
+             "--layout", str(combined_path),
+             "--source-dir", str(src),
+             "--work-dir", str(work),
+             "--assets-root", str(work),
+             "--iterations", str(args.font_calibration_iterations)],
+            check=True, capture_output=True, text=True,
+        )
+        if r.stdout.strip():
+            print(r.stdout.strip())
+        slot_report = work / "debug" / "text_slot_classes.after_size.json"
+        r = subprocess.run(
+            [sys.executable,
+             str(SCRIPTS_ROOT / "deck" / "classify_text_slots.py"),
+             "--layout", str(combined_path),
+             "--out", str(slot_report),
+             "--apply",
+             "--min-group-size", "2",
+             "--min-apply-size", "3"],
+            check=True, capture_output=True, text=True,
+        )
+        if r.stdout.strip():
+            print(r.stdout.strip())
+        r = subprocess.run(
+            [sys.executable,
+             str(SCRIPTS_ROOT / "deck" / "build_pptx_from_layout.py"),
+             "--layout", str(combined_path),
+             "--assets-root", str(work),
+             "--out", str(draft_pptx_path)],
+            check=True, capture_output=True, text=True,
+        )
+        if r.stdout.strip():
+            print(r.stdout.strip())
+        print(f"  -> {draft_pptx_path}")
+        print(f"  stage 3b done in {time.time() - ts:.1f}s", flush=True)
+
+        banner("3c/5  calibrate_text_positions")
+        ts = time.time()
+        r = subprocess.run(
+            [sys.executable,
+             str(SCRIPTS_ROOT / "deck" / "calibrate_text_positions.py"),
+             "--layout", str(combined_path),
+             "--source-dir", str(src),
+             "--work-dir", str(work),
+             "--assets-root", str(work),
+             "--iterations", str(args.calibration_iterations),
+             "--max-shift", str(args.calibration_max_shift)],
+            check=True, capture_output=True, text=True,
+        )
+        if r.stdout.strip():
+            print(r.stdout.strip())
+        slot_report = work / "debug" / "text_slot_classes.after_position.json"
+        r = subprocess.run(
+            [sys.executable,
+             str(SCRIPTS_ROOT / "deck" / "classify_text_slots.py"),
+             "--layout", str(combined_path),
+             "--out", str(slot_report),
+             "--apply",
+             "--min-group-size", "2",
+             "--min-apply-size", "3"],
+            check=True, capture_output=True, text=True,
+        )
+        if r.stdout.strip():
+            print(r.stdout.strip())
+        print(f"  -> {slot_report}")
+        r = subprocess.run(
+            [sys.executable,
+             str(SCRIPTS_ROOT / "deck" / "build_pptx_from_layout.py"),
+             "--layout", str(combined_path),
+             "--assets-root", str(work),
+             "--out", str(pptx_path)],
+            check=True, capture_output=True, text=True,
+        )
+        if r.stdout.strip():
+            print(r.stdout.strip())
+        print(f"  -> {pptx_path}")
+        print(f"  stage 3c done in {time.time() - ts:.1f}s", flush=True)
+    else:
+        banner("3b/5  calibrate_text_sizes SKIPPED")
+        banner("3c/5  calibrate_text_positions SKIPPED")
 
     # ---- Stage 4: inspect_pptx ----
     banner("4/5  inspect_pptx")
@@ -187,6 +315,8 @@ def main() -> int:
         banner("5/5  render_preview (PPTX -> PDF -> PNG)")
         ts = time.time()
         previews_dir.mkdir(parents=True, exist_ok=True)
+        for stale in previews_dir.glob("page-*.png"):
+            stale.unlink()
         try:
             # render_preview writes <out-dir>/previews/page-NN.png,
             # so we point --out-dir at <work> to land at <work>/previews/.

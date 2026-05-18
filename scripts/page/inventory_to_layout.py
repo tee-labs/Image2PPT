@@ -37,13 +37,72 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
+import re
+import sys
 from pathlib import Path
 
 import cv2
 import numpy as np
+from PIL import Image, ImageDraw, ImageFont
+
+SCRIPTS_ROOT = Path(__file__).resolve().parents[1]
+if str(SCRIPTS_ROOT) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_ROOT))
+
+from fontconfig_helper import fontconfig_font_path  # noqa: E402
+from icon import inpaint_region_inplace  # noqa: E402
+from text_safety import ppt_safe_text  # noqa: E402
 
 
 ENABLE_NATIVE_OUTLINE_SHAPES = False
+
+_FONT_CANDIDATES_CACHE: list[dict] | None = None
+_FONT_CACHE: dict[tuple[str, int], ImageFont.FreeTypeFont] = {}
+_TEXT_RENDER_CACHE: dict[tuple[str, str, int, bool], dict | None] = {}
+
+
+def default_ppt_font() -> str:
+    """Target PPT font family.
+
+    Local QA on macOS may render this through a substitute if YaHei is not
+    installed, but the PPTX itself should preserve the intended family.
+    """
+    return "Microsoft YaHei"
+
+
+def _fontconfig_font_path(query: str) -> str | None:
+    """Resolve a font family through fontconfig when available."""
+    return fontconfig_font_path(query)
+
+
+def estimate_slide_background_hex(img: np.ndarray) -> str:
+    """Estimate the slide canvas colour from corner patches.
+
+    Generated slide screenshots usually have a solid canvas behind the
+    content. Sampling corners keeps dark themes dark in the rebuilt PPTX
+    and avoids painting letterbox margins white for portrait/square pages.
+    """
+    h, w = img.shape[:2]
+    patch = max(8, min(h, w) // 16)
+    samples = [
+        img[:patch, :patch],
+        img[:patch, w - patch:w],
+        img[h - patch:h, :patch],
+        img[h - patch:h, w - patch:w],
+    ]
+    pixels = np.concatenate([s.reshape(-1, 3) for s in samples if s.size])
+    if pixels.size == 0:
+        return "#FFFFFF"
+    quant = (pixels // 16) * 16
+    from collections import Counter
+    winner, _ = Counter(map(tuple, quant)).most_common(1)[0]
+    winner_arr = np.array(winner, dtype=np.int16)
+    diff = np.abs(pixels.astype(np.int16) - winner_arr).max(axis=1)
+    close = pixels[diff <= 24]
+    color = np.median(close if len(close) else pixels, axis=0).astype(int)
+    b, g, r = (int(v) for v in color)
+    return f"#{r:02X}{g:02X}{b:02X}"
 
 
 # =============================================================================
@@ -232,7 +291,10 @@ def _classify_text_color(r: int, g: int, b: int, bg: np.ndarray) -> str:
         return "#FFFFFF"
     if r > g + 30 and r > b + 30 and r > 150:
         return "#D43E3E"
-    if b > r + 20 and b > 100:
+    # Canonical deck blue. Require a real blue-vs-gray separation; low
+    # saturation grey-blue body text such as #7A8191 should remain grey
+    # instead of being snapped to the saturated title blue.
+    if b > r + 28 and b > g + 18 and b > 100:
         return "#054798"
     if r < 80 and g < 80 and b < 80:
         return "#222222"
@@ -850,8 +912,8 @@ def _inherit_punct_sizes(runs: list[dict]) -> None:
     though punctuation shares the em-box with the surrounding text — a
     `"软约束"` at 16 pt should keep the quotes at 16 pt, not 8 pt.
 
-    Rule: for each pure-punctuation run, copy the size of the nearer
-    non-punctuation neighbour (prefer the larger when both exist).
+    Rule: for each pure-punctuation run, copy the size of the nearest
+    non-punctuation neighbour (prefer the larger only on a tie).
     """
     if not runs:
         return
@@ -862,19 +924,31 @@ def _inherit_punct_sizes(runs: list[dict]) -> None:
         if not punct:
             continue
         prev_size = None
+        prev_dist = None
         for j in range(i - 1, -1, -1):
             if not is_punct[j] and runs[j].get("size") is not None:
                 prev_size = int(runs[j]["size"])
+                prev_dist = i - j
                 break
         next_size = None
+        next_dist = None
         for j in range(i + 1, len(runs)):
             if not is_punct[j] and runs[j].get("size") is not None:
                 next_size = int(runs[j]["size"])
+                next_dist = j - i
                 break
         if prev_size is None and next_size is None:
             continue
-        runs[i]["size"] = max(s for s in (prev_size, next_size)
-                              if s is not None)
+        if prev_size is None:
+            runs[i]["size"] = next_size
+        elif next_size is None:
+            runs[i]["size"] = prev_size
+        elif prev_dist == next_dist:
+            runs[i]["size"] = max(prev_size, next_size)
+        elif prev_dist < next_dist:
+            runs[i]["size"] = prev_size
+        else:
+            runs[i]["size"] = next_size
 
 
 def _unify_run_sizes_by_color(runs: list[dict]) -> None:
@@ -1022,11 +1096,894 @@ def _color_close(c1: str, c2: str, tol: int = 25) -> bool:
 def _is_stat_value(text: str) -> bool:
     """Stat-value heuristic: short text with digits and a unit suffix.
     Matches `1000亿元`, `24.22%`, `63个`, `29 PB`, etc."""
-    return (
-        any(c.isdigit() for c in text)
-        and len(text) <= 8
-        and any(s in text for s in ["亿", "%", "个", "PB", "MB", "GB", "TB", "万"])
+    compact = "".join(c for c in (text or "") if not c.isspace())
+    if not any(c.isdigit() for c in compact) or len(compact) > 8:
+        return False
+    units = [
+        "亿元", "PB", "MB", "GB", "TB",
+        "分钟", "小时",
+        "亿", "%", "个", "万", "轮", "条", "次", "倍", "年", "月", "天",
+    ]
+    for unit in units:
+        if not compact.endswith(unit):
+            continue
+        number = compact[:-len(unit)] if unit else compact
+        return bool(number) and all(c.isdigit() or c in ".,+-" for c in number)
+    return False
+
+
+def _should_apply_run_font_sizes(text: str) -> bool:
+    """Only short numeric stats get per-run font sizes.
+
+    Per-word glyph height is useful for `524个` or `7分钟`, where digits
+    and unit suffixes are intentionally different sizes. It is harmful
+    for headings and formulas (`Kona·核心洞察`, `O(N)→O(log N)`): tiny
+    punctuation or Latin word boxes shrink individual runs and create
+    visible drift. Those lines should keep one element-level size.
+    """
+    compact = "".join(c for c in (text or "") if not c.isspace())
+    if not _is_stat_value(compact):
+        return False
+    formula_chars = set("()[]{}=<>→←+-*/")
+    latin = sum(1 for c in compact if c.isascii() and c.isalpha())
+    if any(c in formula_chars for c in compact) and latin >= 2:
+        return False
+    return True
+
+
+def _text_width_units(text: str) -> float:
+    units = 0.0
+    for c in text or "":
+        units += _char_width_unit(c)
+    return units
+
+
+def _char_width_unit(c: str) -> float:
+    if c == "\n":
+        return 0.0
+    if c.isspace():
+        return 0.35
+    if c.isascii() and c.isalnum():
+        return 0.56
+    if c in ".,:;!|'`":
+        return 0.25
+    if c in "()[]{}（）":
+        return 0.34
+    if c in "-+/=":
+        return 0.45
+    if c in "→←•·‧":
+        return 0.70
+    return 1.0
+
+
+def _split_box_by_text_units(
+    text: str,
+    box: list[int] | tuple[int, int, int, int],
+) -> list[list[int]] | None:
+    if not text:
+        return None
+    x1, y1, x2, y2 = (int(v) for v in box)
+    if x2 <= x1 or y2 <= y1:
+        return None
+    units = [_char_width_unit(c) for c in text]
+    total = sum(units)
+    if total <= 0:
+        return None
+    boxes: list[list[int]] = []
+    cur = 0.0
+    width = float(x2 - x1)
+    for idx, (ch, unit) in enumerate(zip(text, units)):
+        if unit <= 0:
+            px1 = px2 = int(round(x1 + (cur / total) * width))
+            boxes.append([px1, y1, px2, y2])
+            continue
+        start = cur
+        cur += unit
+        end = cur
+        px1 = int(round(x1 + (start / total) * width))
+        px2 = int(round(x1 + (end / total) * width))
+        if idx == 0:
+            px1 = x1
+        if idx == len(text) - 1:
+            px2 = x2
+        if px2 <= px1:
+            px2 = min(x2, px1 + 1)
+        boxes.append([px1, y1, px2, y2])
+    return boxes if len(boxes) == len(text) else None
+
+
+def _char_boxes_from_words(
+    text: str,
+    words: list[str] | None,
+    word_boxes: list[list[int]] | None,
+) -> list[list[int]] | None:
+    if (not text or words is None or word_boxes is None
+            or len(words) != len(word_boxes)
+            or "".join(words) != text):
+        return None
+    clipped: list[tuple[int, int, int, int]] = []
+    for i, wb in enumerate(word_boxes):
+        wx1, wy1, wx2, wy2 = (int(v) for v in wb)
+        if i > 0:
+            wx1 = max(wx1, int(word_boxes[i - 1][2]))
+        if i + 1 < len(word_boxes):
+            wx2 = min(wx2, int(word_boxes[i + 1][0]))
+        if wx2 <= wx1:
+            wx1, wy1, wx2, wy2 = (int(v) for v in wb)
+        clipped.append((wx1, wy1, wx2, wy2))
+
+    out: list[list[int]] = []
+    for word, box in zip(words, clipped):
+        if len(word) == 1:
+            out.append([int(v) for v in box])
+            continue
+        split = _split_box_by_text_units(word, box)
+        if split is None:
+            return None
+        out.extend(split)
+    return out if len(out) == len(text) else None
+
+
+def _derive_source_char_boxes(
+    text: str,
+    bbox: tuple[int, int, int, int],
+    char_boxes: list[list[int]] | None,
+    words: list[str] | None,
+    word_boxes: list[list[int]] | None,
+) -> list[list[int]] | None:
+    if char_boxes is not None and len(char_boxes) == len(text):
+        return [[int(v) for v in box] for box in char_boxes]
+    from_words = _char_boxes_from_words(text, words, word_boxes)
+    if from_words is not None:
+        return from_words
+    return _split_box_by_text_units(text, bbox)
+
+
+def _estimated_text_width_px(text: str, size_pt: int, *,
+                             pt_per_px: float, bold: bool) -> int:
+    """Estimate the source-pixel width needed to avoid PPT text wrapping."""
+    lines = str(text or "").split("\n")
+    max_units = max((_text_width_units(line) for line in lines), default=0.0)
+    if max_units <= 0 or pt_per_px <= 0:
+        return 0
+    weight = 1.08 if bold else 1.0
+    # 1.10 absorbs LibreOffice/PowerPoint font metric differences without
+    # making normal left-aligned OCR boxes visibly drift.
+    return int(round((size_pt / pt_per_px) * max_units * 1.10 * weight))
+
+
+def _estimated_runs_width_px(runs: list[dict], fallback_size_pt: int, *,
+                             pt_per_px: float, bold: bool) -> int:
+    """Estimate width for a line with run-level font sizes."""
+    if not runs or pt_per_px <= 0:
+        return 0
+    weight = 1.08 if bold else 1.0
+    line_width = 0.0
+    max_width = 0.0
+    for run in runs:
+        text = str(run.get("text", ""))
+        size = int(run.get("size") or fallback_size_pt)
+        parts = text.split("\n")
+        for idx, part in enumerate(parts):
+            if idx > 0:
+                max_width = max(max_width, line_width)
+                line_width = 0.0
+            line_width += (
+                (size / pt_per_px)
+                * _text_width_units(part)
+                * 1.10
+                * weight
+            )
+    max_width = max(max_width, line_width)
+    return int(round(max_width))
+
+
+def _glyph_height_in_char_box(source: np.ndarray,
+                              char_box: list[int],
+                              line_bg: np.ndarray) -> int | None:
+    """Measure actual glyph ink height inside one OCR char/word box."""
+    h_img, w_img = source.shape[:2]
+    x1, y1, x2, y2 = (int(v) for v in char_box)
+    x1 = max(0, min(w_img, x1)); x2 = max(0, min(w_img, x2))
+    y1 = max(0, min(h_img, y1)); y2 = max(0, min(h_img, y2))
+    if x2 <= x1 or y2 <= y1:
+        return None
+    sub = source[y1:y2, x1:x2]
+    if sub.size == 0:
+        return None
+
+    local_bg = line_bg
+    hsv = cv2.cvtColor(sub, cv2.COLOR_BGR2HSV)
+    sat = hsv[:, :, 1] > 50
+    if int(sat.sum()) > 0.45 * sat.size:
+        local_bg = np.median(sub[sat], axis=0)
+    diff = np.abs(sub.astype(int) - local_bg.astype(int)).max(axis=2)
+    mask = diff > 35
+
+    # White text on a saturated badge/header: the local bg is the fill,
+    # and text is the low-saturation, higher-value foreground.
+    if int(sat.sum()) > 0.45 * sat.size:
+        bg_hsv = cv2.cvtColor(
+            np.array([[local_bg]], dtype=np.uint8),
+            cv2.COLOR_BGR2HSV,
+        )[0, 0]
+        light = (
+            (hsv[:, :, 1] < 130)
+            & (hsv[:, :, 2].astype(int) > int(bg_hsv[2]) + 25)
+        )
+        if int(light.sum()) >= 2:
+            mask = light
+
+    if int(mask.sum()) < 2:
+        return None
+    row_has_ink = mask.sum(axis=1) >= 1
+    rows = np.where(row_has_ink)[0]
+    if rows.size < 2:
+        return None
+    return int(rows.max() - rows.min() + 1)
+
+
+def _char_colors_from_runs(text: str, runs: list[dict] | None,
+                           fallback_color: str) -> list[str]:
+    colors: list[str] = []
+    if runs:
+        for run in runs:
+            color = run.get("color") or fallback_color
+            colors.extend([color] * len(str(run.get("text", ""))))
+    if len(colors) != len(text):
+        colors = [fallback_color] * len(text)
+    # If per-character sampling produced runs but they all have the same
+    # sampled colour, there is no real inline colour variation. Use the
+    # line-level classified colour instead; it snaps anti-aliased dark
+    # blue/gray samples back to the canonical PPT palette.
+    elif len({c for c in colors if c}) <= 1:
+        colors = [fallback_color] * len(text)
+    return colors
+
+
+def _build_runs_from_char_sizes(text: str, colors: list[str],
+                                sizes: list[int],
+                                bolds: list[bool] | None = None) -> list[dict]:
+    runs: list[dict] = []
+    cur_text = ""
+    cur_color: str | None = None
+    cur_size: int | None = None
+    cur_bold: bool | None = None
+    if bolds is None or len(bolds) != len(text):
+        bolds = [False] * len(text)
+    for c, color, size, is_bold in zip(text, colors, sizes, bolds):
+        if (cur_text and color == cur_color and size == cur_size
+                and bool(is_bold) == bool(cur_bold)):
+            cur_text += c
+            continue
+        if cur_text:
+            run = {"text": cur_text,
+                   "color": cur_color,
+                   "size": int(cur_size)}
+            if cur_bold:
+                run["bold"] = True
+            runs.append(run)
+        cur_text = c
+        cur_color = color
+        cur_size = int(size)
+        cur_bold = bool(is_bold)
+    if cur_text:
+        run = {"text": cur_text,
+               "color": cur_color,
+               "size": int(cur_size)}
+        if cur_bold:
+            run["bold"] = True
+        runs.append(run)
+    return runs
+
+
+def mixed_size_runs_from_char_boxes(
+    text: str,
+    source: np.ndarray,
+    bbox: tuple[int, int, int, int],
+    char_boxes: list[list[int]] | None,
+    existing_runs: list[dict] | None,
+    fallback_color: str,
+    *,
+    bold: bool,
+    pt_per_px: float,
+) -> dict | None:
+    """Detect common same-line mixed-size patterns and emit run sizes.
+
+    Many generated PPT screenshots use a larger leading label followed by
+    a smaller parenthetical explanation in the same OCR line. A single
+    line-level render fit picks a compromise size. Char-level ink heights
+    let us split the line into PPT runs with different sizes.
+    """
+    if not char_boxes or len(char_boxes) != len(text) or pt_per_px <= 0:
+        return None
+    open_indices = [i for i, c in enumerate(text) if c in "（("]
+    if not open_indices:
+        return None
+    open_idx = open_indices[0]
+    if open_idx < 2 or len(text) - open_idx < 3:
+        return None
+
+    line_bg = _sample_background_for_bbox(source, bbox)
+    raw_heights: list[int | None] = [
+        _glyph_height_in_char_box(source, cb, line_bg)
+        for cb in char_boxes
+    ]
+
+    def visible_heights(indices) -> list[int]:
+        vals: list[int] = []
+        for i in indices:
+            c = text[i]
+            h = raw_heights[i]
+            if h is None or not c.strip() or _is_punct_run(c):
+                continue
+            vals.append(int(h))
+        return vals
+
+    prefix = visible_heights(range(0, open_idx))
+    suffix = visible_heights(range(open_idx + 1, len(text)))
+    if len(prefix) < 2 or len(suffix) < 2:
+        return None
+    prefix_h = float(np.median(prefix))
+    suffix_h = float(np.median(suffix))
+    if prefix_h <= 0 or suffix_h <= 0:
+        return None
+    # Require a visible size step. This avoids splitting lines where glyph
+    # shape alone makes some characters 1-2 px shorter.
+    if suffix_h > prefix_h * 0.90 or prefix_h - suffix_h < 3:
+        return None
+
+    def _union_box(boxes: list[list[int]]) -> tuple[int, int, int, int]:
+        return (
+            min(int(b[0]) for b in boxes),
+            min(int(b[1]) for b in boxes),
+            max(int(b[2]) for b in boxes),
+            max(int(b[3]) for b in boxes),
+        )
+
+    prefix_text = text[:open_idx]
+    suffix_text = text[open_idx:]
+    prefix_box = _union_box(char_boxes[:open_idx])
+    suffix_box = _union_box(char_boxes[open_idx:])
+    prefix_init = font_size_pt(prefix_text,
+                               prefix_box[2] - prefix_box[0],
+                               prefix_box[3] - prefix_box[1],
+                               pt_per_px=pt_per_px)
+    suffix_init = font_size_pt(suffix_text,
+                               suffix_box[2] - suffix_box[0],
+                               suffix_box[3] - suffix_box[1],
+                               pt_per_px=pt_per_px)
+    prefix_fit = fit_text_render(
+        prefix_text, source, prefix_box,
+        initial_size=prefix_init,
+        initial_bold=bold,
+        initial_font=default_ppt_font(),
+        pt_per_px=pt_per_px,
     )
+    suffix_fit = fit_text_render(
+        suffix_text, source, suffix_box,
+        initial_size=suffix_init,
+        initial_bold=bold,
+        initial_font=default_ppt_font(),
+        pt_per_px=pt_per_px,
+    )
+
+    base_size = int(prefix_fit["size"]) if prefix_fit else int(prefix_init)
+    suffix_size = int(suffix_fit["size"]) if suffix_fit else int(suffix_init)
+    if base_size - suffix_size < 2:
+        return None
+
+    def _mostly_cjk(value: str) -> bool:
+        chars = [c for c in value if c.strip() and not _is_punct_run(c)]
+        if not chars:
+            return False
+        cjk = sum(1 for c in chars if 0x4E00 <= ord(c) <= 0x9FFF)
+        return cjk >= max(2, int(math.ceil(len(chars) * 0.70)))
+
+    def _ink_density(box: tuple[int, int, int, int],
+                     glyph_h: float) -> float | None:
+        if glyph_h <= 0:
+            return None
+        metrics = _target_text_metrics(source, box)
+        if metrics is None or metrics["ink_w"] <= 0:
+            return None
+        return float(metrics["ink_area"]) / max(
+            1.0, float(metrics["ink_w"]) * float(glyph_h))
+
+    prefix_bold = bool(bold)
+    suffix_bold = bool(bold)
+    prefix_density = _ink_density(prefix_box, prefix_h)
+    if (not prefix_bold
+            and _mostly_cjk(prefix_text)
+            and prefix_h >= 10
+            and prefix_density is not None
+            and prefix_density >= 0.52):
+        prefix_bold = True
+
+    sizes = [base_size if i < open_idx else suffix_size
+             for i in range(len(text))]
+    bolds = [prefix_bold if i < open_idx else suffix_bold
+             for i in range(len(text))]
+    colors = _char_colors_from_runs(text, existing_runs, fallback_color)
+    return {
+        "runs": _build_runs_from_char_sizes(text, colors, sizes, bolds),
+        "base_size": base_size,
+        "suffix_size": suffix_size,
+        "prefix_h": round(prefix_h, 2),
+        "suffix_h": round(suffix_h, 2),
+        "prefix_bold": bool(prefix_bold),
+        "suffix_bold": bool(suffix_bold),
+        "prefix_density": (
+            round(float(prefix_density), 4)
+            if prefix_density is not None else None
+        ),
+        "prefix_fit_score": (
+            round(float(prefix_fit["score"]), 4) if prefix_fit else None
+        ),
+        "suffix_fit_score": (
+            round(float(suffix_fit["score"]), 4) if suffix_fit else None
+        ),
+    }
+
+
+def _font_candidates() -> list[dict]:
+    """Local render fonts that also have usable PPT font-family names."""
+    global _FONT_CANDIDATES_CACHE
+    if _FONT_CANDIDATES_CACHE is not None:
+        return _FONT_CANDIDATES_CACHE
+
+    yahei_path = _fontconfig_font_path("Microsoft YaHei:style=Regular")
+    # Keep the default first. Non-default faces are allowed to win only
+    # when their rendered pixels materially match the source better. Use
+    # one stable CJK sans candidate to avoid line-by-line face flipping
+    # inside the same paragraph.
+    specs: list[tuple[str, str, float]] = []
+    if yahei_path:
+        specs.append(("Microsoft YaHei", yahei_path, 0.00))
+    specs.extend([
+        ("Arial Unicode MS", "/Library/Fonts/Arial Unicode.ttf", 0.00),
+        ("Arial Unicode MS",
+         "/System/Library/Fonts/Supplemental/Arial Unicode.ttf", 0.02),
+        ("Hiragino Sans GB", "/System/Library/Fonts/Hiragino Sans GB.ttc",
+         0.06),
+    ])
+    if not Path("/System/Library/Fonts/Hiragino Sans GB.ttc").exists():
+        specs.append(("Heiti TC", "/System/Library/Fonts/STHeiti Medium.ttc",
+                      0.06))
+    seen_paths: set[str] = set()
+    out: list[dict] = []
+    for ppt_name, raw_path, penalty in specs:
+        path = Path(raw_path)
+        if not path.exists() or str(path) in seen_paths:
+            continue
+        try:
+            ImageFont.truetype(str(path), 16)
+        except OSError:
+            continue
+        seen_paths.add(str(path))
+        out.append({
+            "ppt_name": ppt_name,
+            "path": str(path),
+            "penalty": float(penalty),
+        })
+    _FONT_CANDIDATES_CACHE = out
+    return out
+
+
+def _load_font(path: str, pixel_size: int) -> ImageFont.FreeTypeFont | None:
+    pixel_size = max(1, int(pixel_size))
+    key = (path, pixel_size)
+    if key not in _FONT_CACHE:
+        try:
+            _FONT_CACHE[key] = ImageFont.truetype(path, pixel_size)
+        except OSError:
+            return None
+    return _FONT_CACHE[key]
+
+
+def _render_text_metrics(text: str, font_path: str, size_pt: int,
+                         pt_per_px: float, bold: bool) -> dict | None:
+    """Render one text line locally and return its ink bbox in source px.
+
+    The layout stores font size in points, but the source image is in
+    pixels. ``pt_per_px`` converts PPT points back to source pixels so the
+    rendered mask can be compared directly with the OCR crop.
+    """
+    if not text or "\n" in text or pt_per_px <= 0:
+        return None
+    pixel_size = max(1, int(round(float(size_pt) / pt_per_px)))
+    cache_key = (text, font_path, pixel_size, bool(bold))
+    if cache_key in _TEXT_RENDER_CACHE:
+        return _TEXT_RENDER_CACHE[cache_key]
+
+    font = _load_font(font_path, pixel_size)
+    if font is None:
+        _TEXT_RENDER_CACHE[cache_key] = None
+        return None
+
+    probe = Image.new("L", (1, 1), 0)
+    draw = ImageDraw.Draw(probe)
+    try:
+        bbox = draw.textbbox((0, 0), text, font=font)
+    except UnicodeEncodeError:
+        _TEXT_RENDER_CACHE[cache_key] = None
+        return None
+    if not bbox:
+        _TEXT_RENDER_CACHE[cache_key] = None
+        return None
+
+    bx1, by1, bx2, by2 = (int(v) for v in bbox)
+    pad = max(4, pixel_size // 3)
+    canvas_w = max(2, bx2 - bx1 + pad * 2 + (1 if bold else 0))
+    canvas_h = max(2, by2 - by1 + pad * 2)
+    origin = (pad - bx1, pad - by1)
+    img = Image.new("L", (canvas_w, canvas_h), 0)
+    draw = ImageDraw.Draw(img)
+    draw.text(origin, text, font=font, fill=255)
+    if bold:
+        # Synthetic one-pixel emboldening. It approximates how PPT/LO
+        # fattens regular CJK fonts when only a regular face is available.
+        draw.text((origin[0] + 1, origin[1]), text, font=font, fill=255)
+
+    arr = np.array(img)
+    ys, xs = np.where(arr > 16)
+    if ys.size == 0 or xs.size == 0:
+        _TEXT_RENDER_CACHE[cache_key] = None
+        return None
+    x_min = int(xs.min())
+    x_max = int(xs.max()) + 1
+    y_min = int(ys.min())
+    y_max = int(ys.max()) + 1
+    rel_bbox = [
+        int(x_min - origin[0]),
+        int(y_min - origin[1]),
+        int(x_max - origin[0]),
+        int(y_max - origin[1]),
+    ]
+    mask_crop = arr[y_min:y_max, x_min:x_max] > 16
+    metrics = {
+        "pixel_size": pixel_size,
+        "ink_bbox": rel_bbox,
+        "ink_w": int(x_max - x_min),
+        "ink_h": int(y_max - y_min),
+        "ink_area": int(mask_crop.sum()),
+        "mask": mask_crop,
+    }
+    _TEXT_RENDER_CACHE[cache_key] = metrics
+    return metrics
+
+
+def _sample_background_for_bbox(
+    img: np.ndarray,
+    bbox: tuple[int, int, int, int],
+) -> np.ndarray:
+    x1, y1, x2, y2 = (int(v) for v in bbox)
+    h_img, w_img = img.shape[:2]
+    x1 = max(0, min(w_img, x1)); x2 = max(0, min(w_img, x2))
+    y1 = max(0, min(h_img, y1)); y2 = max(0, min(h_img, y2))
+    gap = 2
+    ring = 6
+    inner_top = max(0, y1 - gap)
+    inner_bot = min(h_img, y2 + gap)
+    inner_left = max(0, x1 - gap)
+    inner_right = min(w_img, x2 + gap)
+    samples = []
+    if inner_top - ring >= 0:
+        samples.append(img[inner_top - ring:inner_top, inner_left:inner_right])
+    if inner_bot + ring <= h_img:
+        samples.append(img[inner_bot:inner_bot + ring, inner_left:inner_right])
+    if inner_left - ring >= 0:
+        samples.append(img[inner_top:inner_bot, inner_left - ring:inner_left])
+    if inner_right + ring <= w_img:
+        samples.append(img[inner_top:inner_bot, inner_right:inner_right + ring])
+    if samples:
+        pixels = np.concatenate([s.reshape(-1, 3) for s in samples if s.size])
+        if len(pixels):
+            from collections import Counter
+            quant = (pixels // 16) * 16
+            mode_q = np.array(Counter(map(tuple, quant)).most_common(1)[0][0])
+            diff = np.abs(pixels.astype(int) - mode_q).max(axis=1)
+            close = pixels[diff <= 30]
+            if len(close) >= max(8, int(len(pixels) * 0.2)):
+                return np.median(close, axis=0)
+            return np.median(pixels, axis=0)
+    if x2 > x1 and y2 > y1:
+        region = img[y1:y2, x1:x2]
+        if region.size:
+            border = np.concatenate([
+                region[:1, :].reshape(-1, 3),
+                region[-1:, :].reshape(-1, 3),
+                region[:, :1].reshape(-1, 3),
+                region[:, -1:].reshape(-1, 3),
+            ])
+            if len(border):
+                return np.median(border, axis=0)
+    return np.array([255.0, 255.0, 255.0])
+
+
+def _target_text_metrics(
+    source: np.ndarray,
+    bbox: tuple[int, int, int, int],
+) -> dict | None:
+    """Measure the actual source ink inside/near an OCR text bbox."""
+    x1, y1, x2, y2 = (int(v) for v in bbox)
+    h_img, w_img = source.shape[:2]
+    x1 = max(0, min(w_img, x1)); x2 = max(0, min(w_img, x2))
+    y1 = max(0, min(h_img, y1)); y2 = max(0, min(h_img, y2))
+    if x2 <= x1 or y2 <= y1:
+        return None
+
+    bg = _sample_background_for_bbox(source, (x1, y1, x2, y2))
+    pad = max(1, min(3, int(round((y2 - y1) * 0.12))))
+    px1 = max(0, x1 - pad)
+    px2 = min(w_img, x2 + pad)
+    py1 = max(0, y1 - pad)
+    py2 = min(h_img, y2 + pad)
+    region = source[py1:py2, px1:px2]
+    if region.size == 0:
+        return None
+    hsv = cv2.cvtColor(region, cv2.COLOR_BGR2HSV)
+    sat_mask = hsv[:, :, 1] > 50
+    total_px = region.shape[0] * region.shape[1]
+    is_container_like = int(sat_mask.sum()) > 0.55 * total_px
+    container_area = None
+    largest_component = None
+    if is_container_like:
+        n_comp, labels, stats, _ = cv2.connectedComponentsWithStats(
+            sat_mask.astype(np.uint8) * 255, 8)
+        if n_comp > 1:
+            largest_rel = int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+            largest_label = largest_rel + 1
+            largest_area = int(stats[largest_label, cv2.CC_STAT_AREA])
+            total_sat = int(sat_mask.sum())
+            largest_component = (labels == largest_label).astype(np.uint8)
+            if largest_area < 0.55 * total_sat:
+                is_container_like = False
+        else:
+            largest_component = sat_mask.astype(np.uint8)
+    if is_container_like:
+        container_bg = np.median(region[sat_mask], axis=0)
+        if int(np.max(np.abs(container_bg.astype(int) - bg.astype(int)))) > 40:
+            bg = container_bg
+            component = largest_component if largest_component is not None else sat_mask.astype(np.uint8)
+            contours, _ = cv2.findContours(
+                component * 255,
+                cv2.RETR_EXTERNAL,
+                cv2.CHAIN_APPROX_SIMPLE,
+            )
+            filled = np.zeros(component.shape, dtype=np.uint8)
+            if contours:
+                cv2.drawContours(filled, contours, -1, 255, thickness=-1)
+                container_area = filled.astype(bool)
+            else:
+                container_area = component.astype(bool)
+    diff = np.abs(region.astype(int) - bg.astype(int)).max(axis=2)
+    mask = diff > 35
+    if container_area is not None:
+        bg_hsv = cv2.cvtColor(
+            np.array([[bg]], dtype=np.uint8),
+            cv2.COLOR_BGR2HSV,
+        )[0, 0]
+        light_text = (
+            container_area
+            & (hsv[:, :, 1] < 120)
+            & (hsv[:, :, 2].astype(int) > int(bg_hsv[2]) + 28)
+        )
+        if int(light_text.sum()) >= 5:
+            mask = light_text
+            full_rows = mask.sum(axis=1) > 0.75 * mask.shape[1]
+            full_cols = mask.sum(axis=0) > 0.75 * mask.shape[0]
+            mask[full_rows, :] = False
+            mask[:, full_cols] = False
+        else:
+            mask &= container_area
+            full_rows = mask.sum(axis=1) > 0.75 * mask.shape[1]
+            full_cols = mask.sum(axis=0) > 0.75 * mask.shape[0]
+            mask[full_rows, :] = False
+            mask[:, full_cols] = False
+    if int(mask.sum()) < 5:
+        thr = max(15, int(np.percentile(diff, 75)))
+        mask = diff > thr
+    if int(mask.sum()) < 5:
+        return None
+
+    # Reject sparse antialias dust while keeping thin 8-9 pt CJK text.
+    min_row_ink = 1 if (px2 - px1) <= 18 else 2
+    row_has_ink = mask.sum(axis=1) >= min_row_ink
+    col_has_ink = mask.sum(axis=0) >= 1
+    rows = np.where(row_has_ink)[0]
+    cols = np.where(col_has_ink)[0]
+    if rows.size < 2 or cols.size < 2:
+        return None
+
+    ix1 = int(cols.min())
+    ix2 = int(cols.max()) + 1
+    iy1 = int(rows.min())
+    iy2 = int(rows.max()) + 1
+    mask_crop = mask[iy1:iy2, ix1:ix2]
+    return {
+        "ink_bbox": [px1 + ix1, py1 + iy1, px1 + ix2, py1 + iy2],
+        "ink_w": int(ix2 - ix1),
+        "ink_h": int(iy2 - iy1),
+        "ink_area": int(mask_crop.sum()),
+        "mask": mask_crop,
+    }
+
+
+def _mask_shape_error(target_mask: np.ndarray,
+                      render_mask: np.ndarray) -> float:
+    if target_mask.size == 0 or render_mask.size == 0:
+        return 0.5
+    th, tw = target_mask.shape[:2]
+    if th < 3 or tw < 3:
+        return 0.0
+    resized = cv2.resize(
+        render_mask.astype(np.uint8) * 255,
+        (tw, th),
+        interpolation=cv2.INTER_AREA,
+    ) > 64
+    target = target_mask.astype(bool)
+    inter = int((target & resized).sum())
+    union = int((target | resized).sum())
+    if union <= 0:
+        return 0.5
+    return 1.0 - (inter / union)
+
+
+def _binary_size_candidates(
+    text: str,
+    font_path: str,
+    bold: bool,
+    target_h: int,
+    initial_size: int,
+    pt_per_px: float,
+) -> list[int]:
+    """Fast-lock likely pt sizes by binary-searching rendered ink height."""
+    lo, hi = 5, 96
+    for _ in range(8):
+        if lo >= hi:
+            break
+        mid = (lo + hi) // 2
+        metrics = _render_text_metrics(text, font_path, mid, pt_per_px, bold)
+        mid_h = int(metrics["ink_h"]) if metrics else 0
+        if mid_h < target_h:
+            lo = mid + 1
+        else:
+            hi = mid
+    center = lo
+    candidates = set(range(center - 3, center + 4))
+    candidates.update(range(int(initial_size) - 4, int(initial_size) + 5))
+    candidates.update(v for v in _FONT_LADDER
+                      if abs(v - int(initial_size)) <= 8)
+    return sorted(v for v in candidates if 5 <= v <= 96)
+
+
+def fit_text_render(
+    text: str,
+    source: np.ndarray,
+    bbox: tuple[int, int, int, int],
+    *,
+    initial_size: int,
+    initial_bold: bool,
+    initial_font: str,
+    pt_per_px: float,
+) -> dict | None:
+    """Choose font/size/position by comparing render masks to source ink."""
+    if not text or "\n" in text:
+        return None
+    target = _target_text_metrics(source, bbox)
+    if target is None or target["ink_h"] < 3 or target["ink_w"] < 3:
+        return None
+    fonts = _font_candidates()
+    if not fonts:
+        return None
+    if _is_punct_run(text):
+        fonts = [f for f in fonts if f["ppt_name"] == initial_font] or fonts[:1]
+
+    best: dict | None = None
+    bold_options = [bool(initial_bold)]
+    if text.strip() and len(text.strip()) <= 40:
+        bold_options.append(not bool(initial_bold))
+
+    for font_idx, font in enumerate(fonts):
+        font_path = font["path"]
+        font_penalty = float(font.get("penalty", 0.0))
+        if font["ppt_name"] != initial_font:
+            font_penalty += 0.02 + font_idx * 0.005
+        for bold in bold_options:
+            size_candidates = _binary_size_candidates(
+                text, font_path, bold, int(target["ink_h"]),
+                int(initial_size), pt_per_px,
+            )
+            for size in size_candidates:
+                metrics = _render_text_metrics(text, font_path, size,
+                                               pt_per_px, bold)
+                if not metrics:
+                    continue
+                h_err = abs(metrics["ink_h"] - target["ink_h"]) / max(
+                    1, target["ink_h"])
+                w_err = abs(metrics["ink_w"] - target["ink_w"]) / max(
+                    1, target["ink_w"])
+                area_err = abs(metrics["ink_area"] - target["ink_area"]) / max(
+                    1, target["ink_area"])
+                shape_err = _mask_shape_error(target["mask"], metrics["mask"])
+                size_penalty = abs(size - int(initial_size)) / max(
+                    16.0, float(initial_size))
+                bold_penalty = 0.0 if bold == bool(initial_bold) else 0.06
+                score = (
+                    0.40 * h_err
+                    + 0.30 * w_err
+                    + 0.12 * min(1.5, area_err)
+                    + 0.12 * shape_err
+                    + 0.035 * min(2.0, size_penalty)
+                    + font_penalty
+                    + bold_penalty
+                )
+                candidate = {
+                    "score": float(score),
+                    "height_err": float(h_err),
+                    "width_err": float(w_err),
+                    "shape_err": float(shape_err),
+                    "font": font["ppt_name"],
+                    "font_path": font_path,
+                    "size": int(size),
+                    "bold": bool(bold),
+                    "metrics": metrics,
+                    "target": target,
+                }
+                if best is None or candidate["score"] < best["score"]:
+                    best = candidate
+
+    if best is None:
+        return None
+    # If the best render is still far from the source ink, keep the
+    # conservative bbox-height fallback rather than trusting a bad match.
+    if (best["score"] > 0.55
+            and (best["height_err"] > 0.35 or best["width_err"] > 0.55)):
+        return None
+
+    x1, y1, x2, y2 = (int(v) for v in bbox)
+    bbox_w = max(1, x2 - x1)
+    bbox_h = max(1, y2 - y1)
+    metrics = best["metrics"]
+    target = best["target"]
+    rx1, ry1, rx2, ry2 = (int(v) for v in metrics["ink_bbox"])
+    tx1, ty1, tx2, ty2 = (int(v) for v in target["ink_bbox"])
+
+    raw_x = tx1 - rx1
+    raw_y = ty1 - ry1
+    max_dx = max(5, int(round(0.35 * bbox_h)))
+    max_dy = max(6, int(round(0.75 * bbox_h)))
+    fit_x = int(round(max(x1 - max_dx, min(x1 + max_dx, raw_x))))
+    fit_y = int(round(max(y1 - max_dy, min(y1 + max_dy, raw_y))))
+    fit_x = max(0, min(source.shape[1] - 1, fit_x))
+    fit_y = max(0, min(source.shape[0] - 1, fit_y))
+
+    render_w = int(metrics["ink_w"])
+    line_px = float(best["size"]) / max(0.01, pt_per_px)
+    text_w = max(
+        bbox_w + 6,
+        render_w + 8,
+        _estimated_text_width_px(
+            text, int(best["size"]),
+            pt_per_px=pt_per_px,
+            bold=bool(best["bold"]),
+        ) + 8,
+    )
+    text_h = max(
+        bbox_h + 4,
+        int(round(max(float(ry2) + 4.0, line_px * 1.35))),
+    )
+
+    return {
+        "font": best["font"],
+        "size": int(best["size"]),
+        "bold": bool(best["bold"]),
+        "box": [fit_x, fit_y, int(text_w), int(text_h)],
+        "score": round(float(best["score"]), 4),
+        "target_ink": [int(tx1), int(ty1), int(tx2), int(ty2)],
+        "render_ink": [int(rx1), int(ry1), int(rx2), int(ry2)],
+    }
 
 
 _ICON_PAD_ROLES = {"small_icon", "preserve_visual_icon", "subicon", "line_subicon"}
@@ -1092,7 +2049,13 @@ def _bgr_to_hex(color: np.ndarray | list | tuple) -> str:
 
 
 def _line_art_alpha(crop_bgr: np.ndarray) -> np.ndarray:
-    """Alpha mask for sparse coloured line-art cropped from text_clean."""
+    """Alpha mask for sparse line icons without keeping rectangular bg.
+
+    The foreground can be a pure stroke icon, a white badge on a coloured
+    title bar, or a filled warning triangle with white holes. We preserve
+    filled foreground islands and their enclosed holes, but leave ordinary
+    surrounding panel/background pixels transparent.
+    """
     h, w = crop_bgr.shape[:2]
     if h == 0 or w == 0:
         return np.zeros((h, w), dtype=np.uint8)
@@ -1107,12 +2070,45 @@ def _line_art_alpha(crop_bgr: np.ndarray) -> np.ndarray:
     gray = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2GRAY)
     hsv = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2HSV)
     diff = np.abs(crop_bgr.astype(int) - bg.astype(int)).max(axis=2)
-    keep = (diff > 16) & ((hsv[:, :, 1] > 16) | (gray < 238))
-    alpha = np.clip((diff.astype(int) - 10) * 7, 0, 255).astype(np.uint8)
-    alpha[~keep] = 0
+    sat = hsv[:, :, 1]
+    keep = (
+        (diff > 16)
+        & ((sat > 16) | (gray < 238) | (gray > 245))
+    )
+    keep = cv2.morphologyEx(
+        keep.astype(np.uint8) * 255,
+        cv2.MORPH_CLOSE,
+        np.ones((3, 3), np.uint8),
+        iterations=1,
+    ) > 0
+
+    alpha_mask = np.zeros((h, w), dtype=bool)
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(
+        keep.astype(np.uint8), 8)
+    total = max(1, h * w)
+    for i in range(1, n):
+        x, y, cw, ch, area = (int(v) for v in stats[i])
+        if area < max(3, int(round(0.0006 * total))):
+            continue
+        component = labels == i
+        density = area / float(max(1, cw * ch))
+        filled_component = component
+        if density >= 0.24:
+            comp_u8 = component.astype(np.uint8) * 255
+            contours, _ = cv2.findContours(
+                comp_u8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            if contours:
+                filled = np.zeros_like(comp_u8)
+                cv2.drawContours(filled, contours, -1, 255, cv2.FILLED)
+                filled_component = filled > 0
+        alpha_mask |= filled_component
+
+    alpha = np.zeros((h, w), dtype=np.uint8)
+    soft = np.clip((diff.astype(int) - 8) * 14, 0, 255).astype(np.uint8)
+    alpha[keep] = soft[keep]
+    alpha[alpha_mask] = np.maximum(alpha[alpha_mask], 245)
     alpha = cv2.GaussianBlur(alpha, (3, 3), 0)
     return alpha
-
 
 def _sample_outline_color(
     source: np.ndarray,
@@ -1612,6 +2608,439 @@ def merge_multiline_texts(text_records: list[dict]) -> list[dict]:
     return out
 
 
+_BULLET_PREFIX_CHARS = {"·", "•", "‧", "∙", "●", "○", "◦", "▪", "▫"}
+_ORDERED_PREFIX_RE = re.compile(r"^\s*(\(?)(\d{1,3})([.)、．])\)?\s*")
+
+
+def _list_prefix(text: str) -> dict | None:
+    if not text:
+        return None
+    stripped_left = text.lstrip()
+    leading_ws = len(text) - len(stripped_left)
+    if stripped_left[:1] in _BULLET_PREFIX_CHARS:
+        return {
+            "kind": "bullet",
+            "marker_chars": leading_ws + 1,
+            "marker_text": stripped_left[:1],
+            "marker": "•",
+        }
+    match = _ORDERED_PREFIX_RE.match(text)
+    if match:
+        suffix = match.group(3)
+        if suffix in {".", "．"} and match.end() < len(text) and text[match.end()].isdigit():
+            return None
+        auto_type = "arabicPeriod"
+        if suffix == ")":
+            auto_type = "arabicParenR"
+        return {
+            "kind": "ordered",
+            "marker_chars": match.end(),
+            "marker_text": text[:match.end()],
+            "start": int(match.group(2)),
+            "auto_type": auto_type,
+        }
+    return None
+
+
+def _list_marker_geometry(el: dict, marker_chars: int) -> tuple[float, float] | None:
+    chars = el.get("source_chars")
+    boxes = el.get("source_char_boxes")
+    if chars and boxes and len(chars) == len(boxes):
+        marker_indices = [
+            i for i in range(min(marker_chars, len(chars)))
+            if str(chars[i]).strip()
+        ]
+        body_indices = [
+            i for i in range(marker_chars, len(chars))
+            if str(chars[i]).strip()
+        ]
+        if marker_indices and body_indices:
+            marker_x = min(float(boxes[i][0]) for i in marker_indices)
+            body_x = min(float(boxes[i][0]) for i in body_indices)
+            if body_x > marker_x:
+                return marker_x, body_x
+    bbox = el.get("source_bbox")
+    if bbox and len(bbox) == 4:
+        x1, y1, _x2, y2 = (float(v) for v in bbox)
+        h = max(1.0, y2 - y1)
+        return x1 + max(1.0, h * 0.22), x1 + max(12.0, h * 1.15)
+    box = el.get("box")
+    if box and len(box) == 4:
+        x, _y, _w, h = (float(v) for v in box)
+        return x + max(1.0, h * 0.18), x + max(12.0, h * 1.05)
+    return None
+
+
+def _same_list_column(a: dict, b: dict) -> bool:
+    ax, ay, aw, ah = (float(v) for v in a.get("box", [0, 0, 0, 0]))
+    bx, by, bw, bh = (float(v) for v in b.get("box", [0, 0, 0, 0]))
+    overlap = max(0.0, min(ax + aw, bx + bw) - max(ax, bx))
+    narrower = max(1.0, min(aw, bw))
+    x_close = abs(ax - bx) <= max(18.0, min(40.0, max(ah, bh) * 2.0))
+    return overlap / narrower >= 0.35 or x_close
+
+
+def _has_list_neighbour(idx: int, candidates: list[tuple[int, dict, dict]]) -> bool:
+    _orig_idx, el, prefix = candidates[idx]
+    x, y, w, h = (float(v) for v in el.get("box", [0, 0, 0, 0]))
+    for j, (_other_idx, other, other_prefix) in enumerate(candidates):
+        if j == idx:
+            continue
+        if other_prefix.get("kind") != prefix.get("kind"):
+            continue
+        if not _same_list_column(el, other):
+            continue
+        ox, oy, ow, oh = (float(v) for v in other.get("box", [0, 0, 0, 0]))
+        gap = max(0.0, max(y, oy) - min(y + h, oy + oh))
+        if gap <= max(24.0, max(h, oh) * 1.15):
+            return True
+    return False
+
+
+def annotate_native_lists(text_records: list[dict]) -> list[dict]:
+    """Mark leading bullet/number text as native PPT list paragraphs.
+
+    OCR sees bullets as literal glyphs, but PowerPoint stores them as
+    paragraph properties with a hanging indent. Keeping them as normal
+    text makes both font-size matching and x-position calibration treat
+    the bullet gap as part of the word. The layout keeps the original
+    text and char boxes for calibration, and adds a `list` spec so the
+    PPT writer can strip the marker and emit native bullets/numbers.
+    """
+    candidates: list[tuple[int, dict, dict]] = []
+    for idx, el in enumerate(text_records):
+        prefix = _list_prefix(str(el.get("text") or ""))
+        if prefix is not None:
+            candidates.append((idx, el, prefix))
+    if not candidates:
+        return text_records
+
+    for cand_idx, (_idx, el, prefix) in enumerate(candidates):
+        geometry = _list_marker_geometry(el, int(prefix["marker_chars"]))
+        if geometry is None:
+            continue
+        marker_x, body_x = geometry
+        # A leading middle-dot can be real punctuation. Promote it to a
+        # list item only when it has a neighbouring list row or when OCR
+        # exposes a clear bullet-to-body hanging indent.
+        has_indent = body_x - marker_x >= 6.0
+        if not has_indent and not _has_list_neighbour(cand_idx, candidates):
+            continue
+        spec = {
+            "kind": prefix["kind"],
+            "marker_chars": int(prefix["marker_chars"]),
+            "marker_text": prefix.get("marker_text"),
+            "marker_x": int(round(marker_x)),
+            "body_x": int(round(body_x)),
+        }
+        if prefix["kind"] == "bullet":
+            spec["marker"] = prefix.get("marker", "•")
+        else:
+            spec["start"] = int(prefix.get("start", 1))
+            spec["auto_type"] = prefix.get("auto_type", "arabicPeriod")
+        el["list"] = spec
+        el["valign"] = "top"
+    return text_records
+
+
+def strip_leading_list_markers(text_records: list[dict]) -> list[dict]:
+    """Temporarily ignore leading bullet markers.
+
+    Bullets/list markers need a unified pass that can combine OCR text,
+    dot-shaped connected components, and neighbouring rows. Until that
+    pass exists, do not let a leading `·`/`•` participate in font-size or
+    position calibration. The marker is removed from editable text and
+    target geometry is advanced to the body start when we can infer it.
+    """
+    for el in text_records:
+        text = str(el.get("text") or "")
+        prefix = _list_prefix(text)
+        if not prefix or prefix.get("kind") != "bullet":
+            continue
+        marker_chars = int(prefix.get("marker_chars") or 0)
+        if marker_chars <= 0:
+            continue
+
+        geometry = _list_marker_geometry(el, marker_chars)
+        body_x = None
+        if geometry is not None:
+            _marker_x, body_x = geometry
+
+        chars = el.get("source_chars")
+        boxes = el.get("source_char_boxes")
+        if chars and boxes and len(chars) == len(boxes):
+            marker_boxes = [
+                boxes[i] for i in range(min(marker_chars, len(boxes)))
+                if str(chars[i]).strip() and len(boxes[i]) == 4
+            ]
+            if marker_boxes:
+                el["ignored_marker_box"] = [
+                    int(min(b[0] for b in marker_boxes)),
+                    int(min(b[1] for b in marker_boxes)),
+                    int(max(b[2] for b in marker_boxes)),
+                    int(max(b[3] for b in marker_boxes)),
+                ]
+        elif geometry is not None:
+            marker_x, _body_x = geometry
+            bbox = el.get("source_bbox")
+            if bbox and len(bbox) == 4:
+                _x1, y1, _x2, y2 = (float(v) for v in bbox)
+                h = max(1.0, y2 - y1)
+                el["ignored_marker_box"] = [
+                    int(round(marker_x - max(1.0, h * 0.20))),
+                    int(round(y1)),
+                    int(round(marker_x + max(2.0, h * 0.35))),
+                    int(round(y2)),
+                ]
+
+        el["text"] = text[marker_chars:].lstrip()
+        el.pop("list", None)
+
+        runs = el.get("runs")
+        if runs:
+            remaining = marker_chars
+            stripped: list[dict] = []
+            leading_done = False
+            for run in runs:
+                r_text = str(run.get("text") or "")
+                if remaining:
+                    if len(r_text) <= remaining:
+                        remaining -= len(r_text)
+                        continue
+                    r_text = r_text[remaining:]
+                    remaining = 0
+                if not leading_done:
+                    r_text = r_text.lstrip()
+                    leading_done = True
+                if not r_text:
+                    continue
+                new_run = dict(run)
+                new_run["text"] = r_text
+                stripped.append(new_run)
+            if stripped:
+                el["runs"] = stripped
+            else:
+                el.pop("runs", None)
+
+        if chars and boxes and len(chars) == len(boxes):
+            # Drop the marker and any spaces immediately following it.
+            drop = min(marker_chars, len(chars))
+            while drop < len(chars) and not str(chars[drop]).strip():
+                drop += 1
+            el["source_chars"] = chars[drop:]
+            el["source_char_boxes"] = boxes[drop:]
+            if el["source_char_boxes"]:
+                body_x = float(min(int(b[0]) for b in el["source_char_boxes"]))
+
+        if body_x is not None:
+            for key in ("source_bbox", "target_ink", "fit_target_ink"):
+                value = el.get(key)
+                if value and len(value) == 4:
+                    value[0] = int(max(float(value[0]), float(body_x)))
+            box = el.get("box")
+            if box and len(box) == 4:
+                old_x = float(box[0])
+                shift = max(0.0, float(body_x) - old_x)
+                # Keep a little left breathing room for antialiasing.
+                shift = max(0.0, shift - 2.0)
+                if shift:
+                    box[0] = int(round(old_x + shift))
+                    box[2] = int(round(max(1.0, float(box[2]) - shift)))
+    return text_records
+
+
+def _detect_leading_dot_marker(
+    el: dict,
+    source: np.ndarray,
+) -> dict | None:
+    """Find a small dot-like component just before a text line.
+
+    This is intentionally colour-agnostic: bullets can be grey, blue,
+    white, or any theme colour. False positives are controlled later by
+    requiring repeated marker/body indentation across neighbouring rows.
+    """
+    bbox = el.get("source_bbox")
+    line_h = 12.0
+    body_x = None
+    line_y = None
+    if bbox and len(bbox) == 4:
+        bx1, by1, _bx2, by2 = (float(v) for v in bbox)
+        line_h = max(4.0, by2 - by1)
+        body_x = bx1
+        line_y = (by1 + by2) / 2.0
+    boxes = el.get("source_char_boxes") or []
+    if boxes:
+        body_x = float(min(int(b[0]) for b in boxes if len(b) == 4))
+    if el.get("ignored_marker_box"):
+        marker_box = [int(v) for v in el["ignored_marker_box"]]
+        marker_x = (marker_box[0] + marker_box[2]) / 2.0
+        return {
+            "box": marker_box,
+            "forced": True,
+            "marker_x": marker_x,
+            "body_x": float(body_x if body_x is not None else marker_box[2] + line_h),
+            "line_y": float(line_y if line_y is not None else (marker_box[1] + marker_box[3]) / 2.0),
+            "line_h": float(line_h),
+        }
+    if not bbox or len(bbox) != 4:
+        return None
+    text = str(el.get("text") or "").strip()
+    if len(text) < 2:
+        return None
+    size = float(el.get("size") or 0)
+    if size > 24:
+        return None
+
+    x1, y1, x2, y2 = (int(v) for v in bbox)
+    h_img, w_img = source.shape[:2]
+    line_h = max(4, y2 - y1)
+    body_x = int(body_x if body_x is not None else x1)
+
+    sx1 = max(0, min(x1, body_x - int(round(line_h * 1.7))))
+    sx2 = max(sx1 + 1, min(w_img, body_x - 1))
+    sy1 = max(0, y1 - int(round(line_h * 0.35)))
+    sy2 = min(h_img, y2 + int(round(line_h * 0.35)))
+    if sx2 <= sx1 or sy2 <= sy1:
+        return None
+
+    region = source[sy1:sy2, sx1:sx2]
+    if region.size == 0:
+        return None
+    bg = _sample_background_for_bbox(source, (sx1, sy1, sx2, sy2))
+    diff = np.abs(region.astype(np.int16) - bg.astype(np.int16)).max(axis=2)
+    mask = diff > 24
+    if int(mask.sum()) < 2:
+        return None
+
+    count, labels, stats, _centroids = cv2.connectedComponentsWithStats(
+        mask.astype(np.uint8), 8)
+    if count <= 1:
+        return None
+
+    line_cy = (y1 + y2) / 2.0
+    candidates: list[tuple[float, list[int]]] = []
+    for label in range(1, count):
+        cx = int(stats[label, cv2.CC_STAT_LEFT])
+        cy = int(stats[label, cv2.CC_STAT_TOP])
+        cw = int(stats[label, cv2.CC_STAT_WIDTH])
+        ch = int(stats[label, cv2.CC_STAT_HEIGHT])
+        area = int(stats[label, cv2.CC_STAT_AREA])
+        if area < 1:
+            continue
+        if cw > max(6, line_h * 0.55) or ch > max(7, line_h * 0.70):
+            continue
+        if cw < 1 or ch < 1:
+            continue
+        aspect = cw / max(1.0, float(ch))
+        if aspect < 0.35 or aspect > 2.4:
+            continue
+        fill_ratio = area / max(1.0, float(cw * ch))
+        if fill_ratio < 0.12:
+            continue
+        gx1, gy1, gx2, gy2 = sx1 + cx, sy1 + cy, sx1 + cx + cw, sy1 + cy + ch
+        comp_cy = (gy1 + gy2) / 2.0
+        if abs(comp_cy - line_cy) > max(5.0, line_h * 0.45):
+            continue
+        # Prefer the dot nearest to the body start, but still left of it.
+        if gx2 > body_x - max(3.0, line_h * 0.15):
+            continue
+        score = abs(comp_cy - line_cy) + 0.20 * abs(body_x - gx2)
+        candidates.append((score, [gx1, gy1, gx2, gy2]))
+    if not candidates:
+        return None
+    marker_box = min(candidates, key=lambda x: x[0])[1]
+    return {
+        "box": marker_box,
+        "forced": False,
+        "marker_x": (marker_box[0] + marker_box[2]) / 2.0,
+        "body_x": float(body_x),
+        "line_y": float(line_cy),
+        "line_h": float(line_h),
+    }
+
+
+def _marker_has_neighbour(idx: int, candidates: list[tuple[dict, dict]]) -> bool:
+    el, info = candidates[idx]
+    for j, (_other_el, other) in enumerate(candidates):
+        if j == idx:
+            continue
+        line_h = max(float(info.get("line_h") or 1.0),
+                     float(other.get("line_h") or 1.0))
+        body_close = abs(float(info["body_x"]) - float(other["body_x"])) <= max(12.0, line_h * 0.90)
+        marker_close = abs(float(info["marker_x"]) - float(other["marker_x"])) <= max(10.0, line_h * 0.75)
+        y_gap = abs(float(info["line_y"]) - float(other["line_y"]))
+        if body_close and marker_close and y_gap <= max(48.0, line_h * 3.3):
+            return True
+    return False
+
+
+def _marker_rgba_from_source(source: np.ndarray,
+                             bbox: list[int]) -> tuple[np.ndarray, list[int]] | None:
+    h_img, w_img = source.shape[:2]
+    x1, y1, x2, y2 = (int(v) for v in bbox)
+    pad = 3
+    x1 = max(0, x1 - pad)
+    y1 = max(0, y1 - pad)
+    x2 = min(w_img, x2 + pad)
+    y2 = min(h_img, y2 + pad)
+    if x2 <= x1 or y2 <= y1:
+        return None
+    crop = source[y1:y2, x1:x2]
+    if crop.size == 0:
+        return None
+    bg = _sample_background_for_bbox(source, (x1, y1, x2, y2))
+    diff = np.abs(crop.astype(np.int16) - bg.astype(np.int16)).max(axis=2)
+    alpha = np.clip((diff.astype(np.int16) - 8) * 14, 0, 255).astype(np.uint8)
+    if int((alpha > 12).sum()) < 1:
+        return None
+    alpha = cv2.GaussianBlur(alpha, (3, 3), 0)
+    rgba = np.dstack([crop, alpha])
+    return rgba, [x1, y1, x2 - x1, y2 - y1]
+
+
+def restore_ignored_bullet_marker_images(
+    text_records: list[dict],
+    source: np.ndarray,
+    asset_dir: Path,
+    asset_prefix: str,
+) -> list[dict]:
+    """Emit stripped/left-gutter bullet markers as tiny transparent images."""
+    out: list[dict] = []
+    candidates: list[tuple[dict, dict]] = []
+    for el in text_records:
+        info = _detect_leading_dot_marker(el, source)
+        if info is None:
+            continue
+        candidates.append((el, info))
+
+    keep: list[tuple[dict, dict]] = []
+    for idx, (el, info) in enumerate(candidates):
+        if bool(info.get("forced")) or _marker_has_neighbour(idx, candidates):
+            keep.append((el, info))
+
+    for el, info in keep:
+        marker_box = [int(v) for v in info["box"]]
+        rgba_result = _marker_rgba_from_source(source, marker_box)
+        if rgba_result is None:
+            continue
+        rgba, box = rgba_result
+        name = f"{el.get('name', 'text')}_bullet_marker.png"
+        path = asset_dir / name
+        cv2.imwrite(str(path), rgba)
+        out.append({
+            "type": "image",
+            "name": f"{el.get('name', 'text')}_bullet_marker",
+            "path": f"{asset_prefix}/{name}",
+            "box": [int(v) for v in box],
+            "role": "bullet_marker",
+        })
+        el["ignored_marker_image"] = {
+            "box": [int(v) for v in box],
+            "path": f"{asset_prefix}/{name}",
+        }
+    return out
+
+
 # =============================================================================
 # Main: build manifest + layout, crop asset PNGs
 # =============================================================================
@@ -1629,6 +3058,7 @@ def main() -> None:
     # inputs produce a 4:3 slide and 16:9 inputs produce 13.333×7.5.
     # The user can override via --slide-width-in.
     source_h_px, source_w_px = source.shape[:2]
+    inpaint_scale = source_h_px / 720.0
     if args.slide_width_in is None:
         args.slide_width_in = args.slide_height_in * (source_w_px / source_h_px)
     # Resolution-independent calibration: every source pixel maps to
@@ -1776,6 +3206,13 @@ def main() -> None:
             return None
         crop_child = src[cy1:cy2, cx1:cx2]
         role = child.get("role")
+        mask_path = child.get("mask_path")
+        if mask_path and Path(mask_path).exists():
+            m = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
+            if m is not None and m.shape[:2] == src.shape[:2]:
+                mask = m[cy1:cy2, cx1:cx2] > 16
+                if int(mask.sum()) >= 4:
+                    return (cx1, cy1, cx2, cy2), mask
         if role == "subicon":
             gray = cv2.cvtColor(crop_child, cv2.COLOR_BGR2GRAY)
             hsv_ = cv2.cvtColor(crop_child, cv2.COLOR_BGR2HSV)
@@ -1861,9 +3298,9 @@ def main() -> None:
             mask[dst_y1:dst_y2, dst_x1:dst_x2] |= child_mask[src_y1:src_y2, src_x1:src_x2]
         if int(mask.sum()) < 4:
             return crop_bgr
-        inpaint_mask = mask.astype(np.uint8) * 255
-        return cv2.inpaint(np.ascontiguousarray(crop_bgr), inpaint_mask, 3,
-                           cv2.INPAINT_TELEA)
+        patched = crop_bgr.copy()
+        inpaint_region_inplace(patched, mask, radius=3, scale=inpaint_scale)
+        return patched
 
     def _is_redundant_multi_card_outline(el: dict) -> bool:
         x1, y1, x2, y2 = (int(v) for v in el["bbox"])
@@ -2216,16 +3653,22 @@ def main() -> None:
             # against the current text (it may have been corrected by
             # ocr_review_apply, in which case alignment is gone and we
             # fall back to proportional estimation inside detect_text_style).
+            raw_text = el["text"]
+            safe_text = ppt_safe_text(raw_text)
             cb = el.get("char_boxes")
-            if cb is not None and len(cb) != len(el["text"]):
+            if cb is not None and len(cb) != len(raw_text):
                 cb = None
             wd = el.get("words")
             wb = el.get("word_boxes")
             if (wd is not None and wb is not None
-                    and (len(wd) != len(wb) or "".join(wd) != el["text"])):
+                    and (len(wd) != len(wb) or "".join(wd) != raw_text)):
                 wd = wb = None
+            source_char_boxes = _derive_source_char_boxes(
+                raw_text, (int(x1), int(y1), int(x2), int(y2)),
+                cb, wd, wb)
             style = detect_text_style([x1, y1, x2, y2], source,
-                                      text=el["text"], char_boxes=cb,
+                                      text=raw_text,
+                                      char_boxes=source_char_boxes,
                                       words=wd, word_boxes=wb)
             # Convert glyph_h (measured ink extent per word) into per-run
             # font size. α=0.78 same as the line-level formula, applied
@@ -2234,22 +3677,37 @@ def main() -> None:
             # ink is comparable (e.g. `7` in `7分钟` should land near
             # the line's 36 pt, not balloon to 60 pt off a too-narrow
             # word_box that exaggerates a stroke's vertical extent).
+            apply_run_sizes = _should_apply_run_font_sizes(raw_text)
             if "runs" in style:
                 for r in style["runs"]:
                     gh = r.pop("glyph_h", None)
-                    if gh and gh > 0:
+                    if apply_run_sizes and gh and gh > 0:
                         raw = gh * pt_per_px * CAPTURE_FACTOR_SHORT
                         r["size"] = _snap_to_ladder(max(8.0, min(36.0, raw)))
-                # Same-colour runs in one record should share a font
-                # size — `升级为`=14 pt next to `软约束`=16 pt looks
-                # ragged. Group by colour, pick the mode size in each
-                # group, and snap runs within ±2 ladder steps to it.
-                _unify_run_sizes_by_color(style["runs"])
-                # Punctuation typographically inherits the em-box of
-                # its neighbouring text — a `"` between 16 pt body runs
-                # should also render at 16 pt, even though the quote
-                # glyph itself only occupies ~8 px.
-                _inherit_punct_sizes(style["runs"])
+                if apply_run_sizes:
+                    # Same-colour runs in one record should share a font
+                    # size — `升级为`=14 pt next to `软约束`=16 pt looks
+                    # ragged. Group by colour, pick the mode size in each
+                    # group, and snap runs within ±2 ladder steps to it.
+                    _unify_run_sizes_by_color(style["runs"])
+                    # Punctuation typographically inherits the em-box of
+                    # its neighbouring text — a `"` between 16 pt body runs
+                    # should also render at 16 pt, even though the quote
+                    # glyph itself only occupies ~8 px.
+                    _inherit_punct_sizes(style["runs"])
+            mixed_size = None
+            if not apply_run_sizes:
+                mixed_size = mixed_size_runs_from_char_boxes(
+                    raw_text, source, (int(x1), int(y1), int(x2), int(y2)),
+                    source_char_boxes, style.get("runs"), style["color"],
+                    bold=bool(style["bold"]),
+                    pt_per_px=pt_per_px,
+                )
+                if mixed_size is not None:
+                    style["runs"] = mixed_size["runs"]
+            if "runs" in style:
+                for r in style["runs"]:
+                    r["text"] = ppt_safe_text(r.get("text", ""))
             # Decoration-padding probe: when a multi-char line's ink
             # vertical extent is well under bbox_h (≤ 50 %), the bbox
             # likely includes shadow/glow above and below the actual
@@ -2261,28 +3719,87 @@ def main() -> None:
             #     where ink-row measurement is noise-dominated.
             ink_h = style.pop("ink_h", None)
             effective_h = int(y2 - y1)
-            visible_chars = sum(1 for c in el["text"]
+            visible_chars = sum(1 for c in raw_text
                                 if c.strip() and c != "\n")
             if (ink_h and effective_h > 30 and visible_chars >= 3
                     and ink_h <= 0.5 * effective_h):
                 effective_h = ink_h
-            size = font_size_pt(el["text"], x2 - x1, effective_h,
+            size = font_size_pt(safe_text, x2 - x1, effective_h,
                                 pt_per_px=pt_per_px)
+            if mixed_size is not None:
+                size = max(int(size), int(mixed_size["base_size"]))
+            ppt_font = default_ppt_font()
+            text_bold = bool(style["bold"])
+            run_sized = (
+                any(r.get("size") is not None
+                    for r in style.get("runs", []))
+            )
+            compact_text = "".join(c for c in safe_text if not c.isspace())
+            bbox_w = max(1, int(x2 - x1))
+            bbox_h = max(1, int(y2 - y1))
+            badge_like_number = (
+                compact_text.isdigit()
+                and len(compact_text) <= 3
+                and bbox_h >= 24
+                and 0.65 <= (bbox_w / float(bbox_h)) <= 1.60
+            )
+            render_fit = None
+            if not run_sized and not badge_like_number:
+                render_fit = fit_text_render(
+                    safe_text, source, (int(x1), int(y1), int(x2), int(y2)),
+                    initial_size=int(size),
+                    initial_bold=text_bold,
+                    initial_font=ppt_font,
+                    pt_per_px=pt_per_px,
+                )
+                if render_fit is not None:
+                    size = int(render_fit["size"])
+                    text_bold = bool(render_fit["bold"])
             # Tight bbox: do NOT inflate the text box beyond what OCR found.
             # A loose box with left-align makes the text appear shifted from
             # its source position. Just a 2 px right + 2 px bottom safety
             # margin keeps a slightly larger render from clipping.
-            short_value = (
-                len(el["text"]) <= 6
-                and any(c.isdigit() for c in el["text"])
-            )
-            align = "center" if short_value else "left"
+            align = "left"
             # Left edge anchored to OCR x1; 6 px right + 2 px bottom buffers
             # for font-metric variance (without them glyphs that render
             # slightly wider than the OCR bbox wrap to a second visual line
             # even with word_wrap = False).
-            text_w = int(x2 - x1) + 6
+            base_w = int(x2 - x1)
+            text_w = max(
+                base_w + 6,
+                _estimated_text_width_px(
+                    safe_text, int(size),
+                    pt_per_px=pt_per_px,
+                    bold=text_bold,
+                ) + 8,
+            )
+            if run_sized:
+                text_w = max(
+                    text_w,
+                    _estimated_runs_width_px(
+                        style.get("runs", []), int(size),
+                        pt_per_px=pt_per_px,
+                        bold=text_bold,
+                    ) + 8,
+                )
             text_h = int(y2 - y1) + 2
+            if run_sized:
+                text_h = max(
+                    text_h,
+                    int(round((int(size) / max(0.01, pt_per_px)) * 1.20)),
+                )
+            text_x = int(x1)
+            text_y = int(y1)
+            valign_mode = "middle"
+            if align == "center" and text_w > base_w + 6:
+                center = (int(x1) + int(x2)) / 2.0
+                text_x = int(round(center - text_w / 2.0))
+                text_x = max(0, min(source.shape[1] - text_w, text_x))
+            if render_fit is not None and align != "center":
+                text_x, text_y, text_w, text_h = render_fit["box"]
+                valign_mode = "top"
+            elif mixed_size is not None:
+                valign_mode = "top"
             # All title centring runs at PPTX-build time in
             # build_pptx_from_layout.apply_title_centering, which
             # filters on length ≤ 8 + smallest-containing-image +
@@ -2290,16 +3807,47 @@ def main() -> None:
             record = {
                 "type": "text",
                 "name": el["id"],
-                "text": el["text"],
-                "box": [int(x1), int(y1), text_w, text_h],
-                "font": "Microsoft YaHei",
+                "text": safe_text,
+                "box": [text_x, text_y, text_w, text_h],
+                "source_bbox": [int(x1), int(y1), int(x2), int(y2)],
+                "font": ppt_font,
                 "size": int(size),
-                "bold": bool(style["bold"]),
+                "bold": text_bold,
                 "color": style["color"],
                 "align": align,
-                "valign": "middle",
+                "valign": valign_mode,
                 "line_spacing": 1.0,
             }
+            if (source_char_boxes is not None
+                    and len(source_char_boxes) == len(raw_text)
+                    and len(safe_text) == len(raw_text)):
+                record["source_chars"] = list(safe_text)
+                record["source_char_boxes"] = [
+                    [int(v) for v in box] for box in source_char_boxes
+                ]
+            target_metrics = _target_text_metrics(
+                source, (int(x1), int(y1), int(x2), int(y2)))
+            if target_metrics is not None:
+                record["target_ink"] = target_metrics["ink_bbox"]
+            if render_fit is not None:
+                record["size_source"] = "render_fit"
+                record["font_fit_score"] = render_fit["score"]
+                record["render_fit_font"] = render_fit["font"]
+                record["fit_target_ink"] = render_fit["target_ink"]
+                record["fit_render_ink"] = render_fit["render_ink"]
+            elif mixed_size is not None:
+                record["size_source"] = "mixed_runs"
+                record["mixed_size"] = {
+                    "base_size": mixed_size["base_size"],
+                    "suffix_size": mixed_size["suffix_size"],
+                    "prefix_h": mixed_size["prefix_h"],
+                    "suffix_h": mixed_size["suffix_h"],
+                    "prefix_bold": mixed_size.get("prefix_bold"),
+                    "suffix_bold": mixed_size.get("suffix_bold"),
+                    "prefix_density": mixed_size.get("prefix_density"),
+                    "prefix_fit_score": mixed_size["prefix_fit_score"],
+                    "suffix_fit_score": mixed_size["suffix_fit_score"],
+                }
             # Optional in-bbox per-character color runs. Only present when
             # the line has more than one detected color group; consumers
             # (build_pptx_from_layout) should fall back to `color` when
@@ -2314,6 +3862,16 @@ def main() -> None:
     # file for reuse; the call site is just commented out — to re-enable,
     # uncomment the line below.
     # text_elements = merge_multiline_texts(text_elements)
+    text_elements = strip_leading_list_markers(text_elements)
+    # Native list conversion is intentionally not enabled yet. Leading
+    # bullet glyphs are ignored above; a later unified pass should recover
+    # bullets from OCR + connected components and then emit PPT list
+    # paragraph properties consistently.
+    # text_elements = annotate_native_lists(text_elements)
+    image_elements.extend(
+        restore_ignored_bullet_marker_images(
+            text_elements, source, asset_dir, args.asset_prefix)
+    )
     # Size unification still runs — it just normalises font-size drift
     # between visually-identical labels (`1000亿元` vs `24.22%`).
     text_elements = unify_group_sizes(text_elements)
@@ -2338,7 +3896,7 @@ def main() -> None:
         "slide_size": {"width_in": args.slide_width_in, "height_in": args.slide_height_in},
         "source_width": w,
         "source_height": h,
-        "background": "#FFFFFF",
+        "background": estimate_slide_background_hex(source),
         # Native card/frame conversion is optional and currently disabled;
         # outline/card visuals are emitted as images to avoid renderer-added
         # strokes crossing title tabs.

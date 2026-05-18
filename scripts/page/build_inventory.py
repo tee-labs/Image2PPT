@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from collections import Counter
 from pathlib import Path
 
 import cv2
@@ -89,26 +90,43 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _estimate_background_bgr(img: np.ndarray) -> np.ndarray:
+    """Estimate canvas background from the four corners in BGR space."""
+    h, w = img.shape[:2]
+    patch = max(8, min(h, w) // 16)
+    samples = [
+        img[:patch, :patch],
+        img[:patch, w - patch:w],
+        img[h - patch:h, :patch],
+        img[h - patch:h, w - patch:w],
+    ]
+    pixels = np.concatenate([s.reshape(-1, 3) for s in samples if s.size])
+    if pixels.size == 0:
+        return np.array([255, 255, 255], dtype=np.uint8)
+    quant = (pixels // 16) * 16
+    winner, _ = Counter(map(tuple, quant)).most_common(1)[0]
+    winner_arr = np.array(winner, dtype=np.int16)
+    diff = np.abs(pixels.astype(np.int16) - winner_arr).max(axis=1)
+    close = pixels[diff <= 24]
+    return np.median(close if len(close) else pixels, axis=0).astype(np.uint8)
+
+
 def _foreground_mask(cleaned: np.ndarray, dilate_size: int) -> np.ndarray:
     """Foreground mask used by detect_components and conservative_split.
 
-    Threshold: noticeably non-white (`gray<245 OR HSV.S>12`) plus a Canny
-    edge layer that catches 1-px pale outlines — empty icon circles and
-    faint card borders (~#E0E8F5) that fall below the absolute luminance
-    threshold but are still high-contrast against their local
-    neighbourhood. Followed by a `dilate_size`×`dilate_size` MORPH_CLOSE
-    so the small fragments inside one icon merge into a single component,
-    while two spatially separate icons stay distinct.
-
-    Note: this threshold uses WHITE as the slide-bg assumption. On a
-    dark-bg slide every pixel passes — every element merges into one
-    full-slide blob and the splitter has nothing to work with. The
-    current pipeline assumes light-on-light slides; dark-themed slides
-    would need a different threshold (e.g. diff-from-corner-bg).
+    Threshold: noticeably different from the corner-estimated canvas
+    background plus a Canny edge layer that catches 1-px pale outlines.
+    The old white-background test made every pixel of a dark slide look
+    like foreground, merging the whole page into one flattened object.
     """
     gray = cv2.cvtColor(cleaned, cv2.COLOR_BGR2GRAY)
     hsv = cv2.cvtColor(cleaned, cv2.COLOR_BGR2HSV)
-    mask = ((gray < 245) | (hsv[:, :, 1] > 12)).astype(np.uint8) * 255
+    bg = _estimate_background_bgr(cleaned).astype(np.int16)
+    diff_bg = np.abs(cleaned.astype(np.int16) - bg).max(axis=2)
+    bg_pixel = bg.astype(np.uint8).reshape(1, 1, 3)
+    bg_hsv = cv2.cvtColor(bg_pixel, cv2.COLOR_BGR2HSV)[0, 0]
+    sat_delta = np.abs(hsv[:, :, 1].astype(np.int16) - int(bg_hsv[1]))
+    mask = ((diff_bg >= 8) | ((diff_bg >= 5) & (sat_delta > 18))).astype(np.uint8) * 255
     blurred = cv2.GaussianBlur(gray, (3, 3), 0)
     edges = cv2.Canny(blurred, 30, 90)
     edges = cv2.dilate(edges, np.ones((2, 2), np.uint8), iterations=1)
@@ -464,6 +482,10 @@ def main() -> None:
     line_min_area = s_area(1200, scale)
     line_min_side = s_length(24, scale)
 
+    def _box4(record: tuple) -> tuple[int, int, int, int]:
+        return (int(record[0]), int(record[1]),
+                int(record[2]), int(record[3]))
+
     def _scan_internal_shapes_inplace(sx1: int, sy1: int,
                                       sx2: int, sy2: int) -> None:
         """Detect internal sub-shapes (badges, placeholders, small colored
@@ -489,8 +511,10 @@ def main() -> None:
         for (ix1, iy1, ix2, iy2), (mask_in_crop, color) in zip(shapes, fill_jobs):
             # Same dedup rule as subicons: skip if already covered.
             duplicate = False
-            for (ex1, ey1, ex2, ey2) in (
-                subicon_records + line_subicon_records + internal_shape_records
+            for ex1, ey1, ex2, ey2 in (
+                [_box4(r) for r in subicon_records]
+                + [_box4(r) for r in line_subicon_records]
+                + [_box4(r) for r in internal_shape_records]
             ):
                 ox1, oy1 = max(ix1, ex1), max(iy1, ey1)
                 ox2, oy2 = min(ix2, ex2), min(iy2, ey2)
@@ -505,13 +529,13 @@ def main() -> None:
             if duplicate:
                 continue
             internal_shape_records.append((ix1, iy1, ix2, iy2))
-            # cv2.inpaint instead of solid-colour fill: reconstructs
-            # local card background continuously so a non-uniform card
-            # fill comes out without a flat rectangle of the wrong
-            # colour. Re-take the view each iteration in case a prior
-            # inpaint reallocated the array.
+            # Background-aware patch: flat-fill locally uniform cards to
+            # avoid icon ghosts, but fall back to inpaint on non-uniform
+            # card fills. Re-take the view each iteration in case a prior
+            # patch reallocated the array.
             local = cleaned[sy1:sy2, sx1:sx2]
-            inpaint_region_inplace(local, mask_in_crop, scale=scale)
+            inpaint_region_inplace(local, mask_in_crop, scale=scale,
+                                   fill_color=color)
 
     def _scan_subicons_inplace(sx1: int, sy1: int, sx2: int, sy2: int) -> None:
         """Detect white pictograms inside any dark uniform sub-shape that
@@ -553,7 +577,8 @@ def main() -> None:
                 continue
             subicon_records.append((ix1, iy1, ix2, iy2))
             local = cleaned[sy1:sy2, sx1:sx2]
-            inpaint_region_inplace(local, mask_in_crop, scale=scale)
+            inpaint_region_inplace(local, mask_in_crop, scale=scale,
+                                   fill_color=color)
 
     def _scan_line_subicons_inplace(sx1: int, sy1: int,
                                     sx2: int, sy2: int) -> None:
@@ -574,8 +599,10 @@ def main() -> None:
             return
         for (ix1, iy1, ix2, iy2), (mask_in_crop, _color) in zip(subs, fill_jobs):
             duplicate = False
-            for (ex1, ey1, ex2, ey2) in (
-                subicon_records + line_subicon_records + internal_shape_records
+            for ex1, ey1, ex2, ey2 in (
+                [_box4(r) for r in subicon_records]
+                + [_box4(r) for r in line_subicon_records]
+                + [_box4(r) for r in internal_shape_records]
             ):
                 ox1, oy1 = max(ix1, ex1), max(iy1, ey1)
                 ox2, oy2 = min(ix2, ex2), min(iy2, ey2)
@@ -589,9 +616,14 @@ def main() -> None:
                     break
             if duplicate:
                 continue
-            line_subicon_records.append((ix1, iy1, ix2, iy2))
+            full_mask = np.zeros((img_h, img_w), dtype=np.uint8)
+            full_mask[sy1:sy2, sx1:sx2] = (
+                mask_in_crop.astype(np.uint8) * 255
+            )
+            line_subicon_records.append((ix1, iy1, ix2, iy2, full_mask))
             local = cleaned[sy1:sy2, sx1:sx2]
-            inpaint_region_inplace(local, mask_in_crop, scale=scale)
+            inpaint_region_inplace(local, mask_in_crop, scale=scale,
+                                   fill_color=_color)
 
     def _append_outline_record(x1: int, y1: int, x2: int, y2: int,
                                outline_mask: np.ndarray) -> None:
@@ -664,9 +696,9 @@ def main() -> None:
     # on top of the shape and hide it — exactly the page-15 "01/02/03
     # badges go missing" symptom.
     shape_boxes = (
-        list(subicon_records)
-        + list(line_subicon_records)
-        + list(internal_shape_records)
+        [_box4(r) for r in subicon_records]
+        + [_box4(r) for r in line_subicon_records]
+        + [_box4(r) for r in internal_shape_records]
     )
 
     def _covered_by_shape(fx1, fy1, fx2, fy2) -> bool:
@@ -682,6 +714,36 @@ def main() -> None:
 
     foreground_records = [
         r for r in foreground_records if not _covered_by_shape(*r)
+    ]
+
+    def _outline_duplicated_by_full_record(ox1: int, oy1: int,
+                                           ox2: int, oy2: int) -> bool:
+        """Drop outline masks when an equivalent full crop already exists.
+
+        Filled cards/panels are often detected twice: once as an outline
+        alpha mask and once as a near-identical foreground crop. Keeping
+        both makes PowerPoint stacks noisy and can visually double borders
+        or residual pixels. Prefer the full crop for same-sized duplicates
+        because it carries the panel fill/background in one object.
+        """
+        oarea = max(1, (ox2 - ox1) * (oy2 - oy1))
+        for fx1, fy1, fx2, fy2 in background_records + foreground_records:
+            farea = max(1, (fx2 - fx1) * (fy2 - fy1))
+            size_ratio = min(oarea, farea) / max(oarea, farea)
+            if size_ratio < 0.80:
+                continue
+            ix1, iy1 = max(ox1, fx1), max(oy1, fy1)
+            ix2, iy2 = min(ox2, fx2), min(oy2, fy2)
+            if ix2 <= ix1 or iy2 <= iy1:
+                continue
+            inter = (ix2 - ix1) * (iy2 - iy1)
+            if inter >= 0.92 * min(oarea, farea):
+                return True
+        return False
+
+    outline_records = [
+        r for r in outline_records
+        if not _outline_duplicated_by_full_record(r[0], r[1], r[2], r[3])
     ]
 
     # Nested-foreground inpaint pass. When a small foreground record (a
@@ -789,9 +851,9 @@ def main() -> None:
         residual_mask = _foreground_mask(text_only_for_residual, args.dilate)
         all_bboxes = (
             list(foreground_records)
-            + list(subicon_records)
-            + list(line_subicon_records)
-            + list(internal_shape_records)
+            + [_box4(r) for r in subicon_records]
+            + [_box4(r) for r in line_subicon_records]
+            + [_box4(r) for r in internal_shape_records]
             + [(x1, y1, x2, y2) for (x1, y1, x2, y2, _) in outline_records]
         )
         covered = np.zeros_like(residual_mask, dtype=np.uint8)
@@ -886,14 +948,20 @@ def main() -> None:
             "role": "internal",
         })
         visual_idx += 1
-    for x1, y1, x2, y2 in line_subicon_records:
-        inventory.append({
-            "id": f"v{visual_idx:03d}",
+    for x1, y1, x2, y2, line_mask in line_subicon_records:
+        comp_id = f"v{visual_idx:03d}"
+        entry = {
+            "id": comp_id,
             "type": "image",
             "bbox": [int(x1), int(y1), int(x2), int(y2)],
             "source": "source",
             "role": "line_subicon",
-        })
+        }
+        if masks_out_dir is not None:
+            mask_path = masks_out_dir / f"{comp_id}.mask.png"
+            cv2.imwrite(str(mask_path), line_mask)
+            entry["mask_path"] = str(mask_path)
+        inventory.append(entry)
         visual_idx += 1
     for x1, y1, x2, y2 in subicon_records:
         inventory.append({
@@ -958,7 +1026,7 @@ def main() -> None:
                         cv2.FONT_HERSHEY_SIMPLEX, 0.35, (255, 0, 255), 1,
                         cv2.LINE_AA)
         # Sparse line-art sub-icons — purple, thicker
-        for x1, y1, x2, y2 in line_subicon_records:
+        for x1, y1, x2, y2 in [_box4(r) for r in line_subicon_records]:
             cv2.rectangle(vis, (x1, y1), (x2, y2), (180, 0, 180), 2)
             cv2.putText(vis, "line", (x1 + 1, max(10, y1 - 2)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.35, (180, 0, 180), 1,

@@ -1,0 +1,29 @@
+{
+  "name": "light_text_columns",
+  "description": "Two-column comparison: traditional approach vs DeckWeaver, with bullet lists.",
+  "background": "light",
+  "size": {
+    "width": 1280,
+    "height": 960
+  },
+  "must_appear_text": [
+    "为什么需要 DeckWeaver",
+    "传统方式",
+    "DeckWeaver",
+    "截图",
+    "可编辑文本框",
+    "本地 OCR"
+  ],
+  "expected_image_objects": {
+    "min": 0,
+    "max": 6
+  },
+  "expected_textboxes": {
+    "min": 8,
+    "max": 18
+  },
+  "tags": [
+    "light",
+    "text-heavy"
+  ]
+}

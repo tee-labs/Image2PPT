@@ -1,6 +1,12 @@
 # Generated conversion outputs
 output_project/
 
+# Per-run regression test reports
+tests/reports/
+
+# Cached pipeline outputs for tests (keyed by source hash)
+tests/_work/
+
 # Local/private source images
 slides_private/
 scratch/

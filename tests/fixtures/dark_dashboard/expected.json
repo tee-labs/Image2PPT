@@ -1,0 +1,29 @@
+{
+  "name": "dark_dashboard",
+  "description": "Dark dashboard with five-step pipeline, icons and short captions.",
+  "background": "dark",
+  "size": {
+    "width": 2560,
+    "height": 1440
+  },
+  "must_appear_text": [
+    "DeckWeaver 处理流程",
+    "OCR 识别",
+    "元素检测",
+    "布局重建",
+    "PPTX 生成",
+    "视觉校准"
+  ],
+  "expected_image_objects": {
+    "min": 0,
+    "max": 12
+  },
+  "expected_textboxes": {
+    "min": 10,
+    "max": 25
+  },
+  "tags": [
+    "dark",
+    "pipeline"
+  ]
+}

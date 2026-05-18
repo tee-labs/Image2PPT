@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=1600, height=1200, initial-scale=1.0">
+  <title>核心特性</title>
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      margin: 0;
+      width: 1600px;
+      height: 1200px;
+      overflow: hidden;
+      background: #111827;
+    }
+
+    body {
+      margin: 0;
+      width: 1600px;
+      height: 1200px;
+      overflow: hidden;
+      font-family: -apple-system, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+      background: #111827;
+      color: #FFFFFF;
+    }
+
+    .slide {
+      position: relative;
+      width: 1600px;
+      height: 1200px;
+      overflow: hidden;
+      background: #111827;
+    }
+
+    .header {
+      position: absolute;
+      top: 78px;
+      left: 0;
+      width: 1600px;
+      text-align: center;
+    }
+
+    .title {
+      margin: 0;
+      color: #FFFFFF;
+      font-size: 64px;
+      line-height: 78px;
+      font-weight: 800;
+      letter-spacing: 0;
+    }
+
+    .subtitle {
+      margin: 12px 0 0;
+      color: #9CA3AF;
+      font-size: 28px;
+      line-height: 38px;
+      font-weight: 500;
+      font-style: italic;
+      letter-spacing: 0;
+    }
+
+    .grid {
+      position: absolute;
+      top: 260px;
+      left: 90px;
+      width: 1420px;
+      height: 688px;
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      grid-template-rows: repeat(2, 330px);
+      gap: 28px;
+    }
+
+    .card {
+      min-width: 0;
+      height: 330px;
+      padding: 32px;
+      border: 1px solid #374151;
+      border-radius: 28px;
+      background: #1F2937;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-start;
+    }
+
+    .icon {
+      display: block;
+      height: 72px;
+      color: #FFFFFF;
+      font-size: 64px;
+      line-height: 72px;
+      font-weight: 700;
+      letter-spacing: 0;
+    }
+
+    .number {
+      margin-top: 18px;
+      font-size: 52px;
+      line-height: 60px;
+      font-weight: 800;
+      letter-spacing: 0;
+    }
+
+    .card-title {
+      margin-top: 12px;
+      color: #FFFFFF;
+      font-size: 28px;
+      line-height: 36px;
+      font-weight: 700;
+      letter-spacing: 0;
+      white-space: nowrap;
+    }
+
+    .caption {
+      margin-top: 10px;
+      color: #9CA3AF;
+      font-size: 20px;
+      line-height: 30px;
+      font-weight: 500;
+      letter-spacing: 0;
+      white-space: nowrap;
+    }
+
+    .green {
+      color: #10B981;
+    }
+
+    .amber {
+      color: #F59E0B;
+    }
+
+    .cyan {
+      color: #06B6D4;
+    }
+
+    .violet {
+      color: #8B5CF6;
+    }
+
+    .rose {
+      color: #F43F5E;
+    }
+
+    .blue {
+      color: #3B82F6;
+    }
+
+    .footer {
+      position: absolute;
+      left: 0;
+      bottom: 44px;
+      width: 1600px;
+      color: #6B7280;
+      text-align: center;
+      font-size: 22px;
+      line-height: 30px;
+      font-weight: 600;
+      letter-spacing: 0;
+    }
+  </style>
+</head>
+<body>
+  <main class="slide" aria-label="核心特性">
+    <header class="header">
+      <h1 class="title">核心特性</h1>
+      <p class="subtitle">Six reasons teams pick DeckWeaver</p>
+    </header>
+
+    <section class="grid" aria-label="DeckWeaver feature cards">
+      <article class="card">
+        <div class="icon">🔒</div>
+        <div class="number green">0</div>
+        <div class="card-title">本地运行</div>
+        <div class="caption">OCR 与渲染均在本地完成</div>
+      </article>
+
+      <article class="card">
+        <div class="icon">💰</div>
+        <div class="number amber">≈0</div>
+        <div class="card-title">Token 消耗</div>
+        <div class="caption">命令行模式无需调用大模型</div>
+      </article>
+
+      <article class="card">
+        <div class="icon">⚡</div>
+        <div class="number cyan">5×</div>
+        <div class="card-title">速度提升</div>
+        <div class="caption">热模型批量复用，流水线并行</div>
+      </article>
+
+      <article class="card">
+        <div class="icon">🗂</div>
+        <div class="number violet">4+</div>
+        <div class="card-title">支持格式</div>
+        <div class="caption">PNG / JPG / WebP / TIFF</div>
+      </article>
+
+      <article class="card">
+        <div class="icon">✏️</div>
+        <div class="number rose">100%</div>
+        <div class="card-title">可编辑</div>
+        <div class="caption">文字与图标皆为独立对象</div>
+      </article>
+
+      <article class="card">
+        <div class="icon">🌐</div>
+        <div class="number blue">MIT</div>
+        <div class="card-title">开源协议</div>
+        <div class="caption">个人免费使用，商用可授权</div>
+      </article>
+    </section>
+
+    <footer class="footer">deckweaver.dev</footer>
+  </main>
+</body>
+</html>

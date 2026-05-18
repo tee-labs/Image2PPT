@@ -5,15 +5,20 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 from typing import Any
+
+SCRIPTS_ROOT = Path(__file__).resolve().parents[1]
+if str(SCRIPTS_ROOT) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_ROOT))
 
 try:
     from pptx import Presentation
     from pptx.dml.color import RGBColor
     from pptx.enum.dml import MSO_LINE_DASH_STYLE
     from pptx.enum.shapes import MSO_CONNECTOR, MSO_SHAPE
-    from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
+    from pptx.enum.text import MSO_ANCHOR, MSO_AUTO_SIZE, PP_ALIGN
     from pptx.oxml.ns import qn
     from pptx.oxml.xmlchemy import OxmlElement
     from pptx.util import Inches, Pt
@@ -22,6 +27,15 @@ except ModuleNotFoundError as exc:
         "Missing python-pptx. Install it in the active Python environment with: "
         "python -m pip install python-pptx"
     ) from exc
+
+from text_safety import ppt_safe_text  # noqa: E402
+
+
+def default_ppt_font() -> str:
+    return "Microsoft YaHei"
+
+
+DEFAULT_FONT = default_ppt_font()
 
 
 def parse_args() -> argparse.Namespace:
@@ -45,6 +59,22 @@ def rgb(value: Any, default: RGBColor | None = None) -> RGBColor | None:
     if isinstance(value, (list, tuple)) and len(value) >= 3:
         return RGBColor(int(value[0]), int(value[1]), int(value[2]))
     raise ValueError(f"Unsupported color: {value!r}")
+
+
+def rgb_hex(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        if text.lower() in {"none", "transparent", "background"}:
+            return None
+        text = text.lstrip("#")
+        if len(text) == 6:
+            return text.upper()
+        return None
+    if isinstance(value, (list, tuple)) and len(value) >= 3:
+        return f"{int(value[0]):02X}{int(value[1]):02X}{int(value[2]):02X}"
+    return None
 
 
 def align(value: str | None) -> PP_ALIGN:
@@ -118,6 +148,11 @@ def apply_size_unification(elements: list[dict[str, Any]],
     texts = [el for el in elements if (el.get("type") or "").lower() == "text"
              and el.get("size") is not None
              and el.get("box") and len(el["box"]) == 4]
+    texts = [
+        el for el in texts
+        if el.get("size_source")
+        not in {"render_fit", "mixed_runs", "preview_calibrated"}
+    ]
     if len(texts) < 2:
         return
 
@@ -242,6 +277,12 @@ def apply_title_centering(elements: list[dict[str, Any]],
     for el in elements:
         if (el.get("type") or "").lower() != "text":
             continue
+        # Position calibration has already measured the rendered ink
+        # against the source image. Do not apply a second heuristic
+        # re-centering pass afterward, or the closed-loop correction gets
+        # partially undone in the final PPTX.
+        if el.get("position_source") == "preview_calibrated":
+            continue
         # Length filter — titles are short by convention (badge labels,
         # section headers ≤ 8 chars). Skip longer text so a 14-char
         # quote in a wide banner doesn't get falsely centred.
@@ -299,49 +340,159 @@ class Builder:
         self.layout = layout
         self.out = out
         self.assets_root = assets_root
-        self.px_w = float(layout.get("source_width") or layout.get("canvas", {}).get("width") or 1182)
-        self.px_h = float(layout.get("source_height") or layout.get("canvas", {}).get("height") or 665)
+        self.default_px_w = float(layout.get("source_width") or layout.get("canvas", {}).get("width") or 1182)
+        self.default_px_h = float(layout.get("source_height") or layout.get("canvas", {}).get("height") or 665)
         slide_size = layout.get("slide_size", {})
         self.slide_w_in = float(slide_size.get("width_in", 13.333333))
         self.slide_h_in = float(slide_size.get("height_in", 7.5))
-        self.sx = self.slide_w_in / self.px_w
-        self.sy = self.slide_h_in / self.px_h
+        self.scale_in_per_px = min(
+            self.slide_w_in / self.default_px_w,
+            self.slide_h_in / self.default_px_h,
+        )
+        self.offset_x_in = (self.slide_w_in - self.default_px_w * self.scale_in_per_px) / 2.0
+        self.offset_y_in = (self.slide_h_in - self.default_px_h * self.scale_in_per_px) / 2.0
         self.prs = Presentation()
         self.prs.slide_width = Inches(self.slide_w_in)
         self.prs.slide_height = Inches(self.slide_h_in)
 
     def x(self, value: float):
-        return Inches(float(value) * self.sx)
+        return Inches(self.offset_x_in + float(value) * self.scale_in_per_px)
 
     def y(self, value: float):
-        return Inches(float(value) * self.sy)
+        return Inches(self.offset_y_in + float(value) * self.scale_in_per_px)
 
     def w(self, value: float):
-        return Inches(float(value) * self.sx)
+        return Inches(float(value) * self.scale_in_per_px)
 
     def h(self, value: float):
-        return Inches(float(value) * self.sy)
+        return Inches(float(value) * self.scale_in_per_px)
+
+    def set_slide_coordinate_space(self, spec: dict[str, Any]) -> None:
+        """Map this slide's source pixels into the deck canvas.
+
+        PowerPoint uses one page size for the whole deck. When source
+        screenshots have mixed aspect ratios, each slide is therefore
+        letterboxed into the deck canvas instead of being stretched using
+        the first slide's pixel dimensions.
+        """
+        px_w = float(spec.get("source_width") or self.default_px_w)
+        px_h = float(spec.get("source_height") or self.default_px_h)
+        if px_w <= 0 or px_h <= 0:
+            px_w, px_h = self.default_px_w, self.default_px_h
+        self.scale_in_per_px = min(
+            self.slide_w_in / px_w,
+            self.slide_h_in / px_h,
+        )
+        self.offset_x_in = (self.slide_w_in - px_w * self.scale_in_per_px) / 2.0
+        self.offset_y_in = (self.slide_h_in - px_h * self.scale_in_per_px) / 2.0
 
     def set_font(self, run, spec: dict[str, Any]) -> None:
-        font = spec.get("font") or spec.get("font_name") or "Microsoft YaHei"
+        font = spec.get("font") or spec.get("font_name") or DEFAULT_FONT
         run.font.name = font
-        run.font.size = Pt(float(spec.get("size", spec.get("font_size", 18))))
+        size = int(round(float(spec.get("size", spec.get("font_size", 18)))))
+        run.font.size = Pt(max(1, size))
         run.font.bold = bool(spec.get("bold", False))
         run.font.italic = bool(spec.get("italic", False))
         col = rgb(spec.get("color", "#111111"))
         if col is not None:
             run.font.color.rgb = col
         r_pr = run._r.get_or_add_rPr()
-        latin = r_pr.find(qn("a:latin"))
-        if latin is None:
-            latin = OxmlElement("a:latin")
-            r_pr.append(latin)
-        latin.set("typeface", font)
-        ea = r_pr.find(qn("a:ea"))
-        if ea is None:
-            ea = OxmlElement("a:ea")
-            r_pr.append(ea)
-        ea.set("typeface", font)
+        # Prevent PowerPoint from drawing red spell-check squiggles over
+        # editable OCR text. These marks are UI proofing overlays, not part
+        # of the original slide, and are especially noisy for Chinese text
+        # mixed with symbols or English terms.
+        r_pr.set("lang", str(spec.get("lang") or "zh-CN"))
+        r_pr.set("noProof", "1")
+        r_pr.set("dirty", "0")
+        char_spacing = spec.get("char_spacing")
+        if char_spacing is None:
+            char_spacing = spec.get("character_spacing")
+        if char_spacing is not None:
+            r_pr.set("spc", str(int(round(float(char_spacing)))))
+        for tag in ("a:latin", "a:ea", "a:cs", "a:sym"):
+            face = r_pr.find(qn(tag))
+            if face is None:
+                face = OxmlElement(tag)
+                r_pr.append(face)
+            face.set("typeface", font)
+
+    def strip_list_marker_text(self, el: dict[str, Any], text: str) -> str:
+        spec = el.get("list") or {}
+        marker_chars = int(spec.get("marker_chars") or 0)
+        if marker_chars <= 0:
+            return text
+        return text[marker_chars:].lstrip()
+
+    def strip_list_marker_runs(self, el: dict[str, Any],
+                               runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        spec = el.get("list") or {}
+        remaining = int(spec.get("marker_chars") or 0)
+        if remaining <= 0:
+            return runs
+        out: list[dict[str, Any]] = []
+        stripped_leading_space = False
+        for run in runs:
+            text = ppt_safe_text(run.get("text", ""))
+            if remaining:
+                if len(text) <= remaining:
+                    remaining -= len(text)
+                    continue
+                text = text[remaining:]
+                remaining = 0
+            if not stripped_leading_space:
+                text = text.lstrip()
+                stripped_leading_space = True
+            if not text:
+                continue
+            new_run = dict(run)
+            new_run["text"] = text
+            out.append(new_run)
+        return out
+
+    def apply_paragraph_list_style(self, paragraph, el: dict[str, Any],
+                                   box_left_px: float, box_width_px: float) -> None:
+        spec = el.get("list") or {}
+        if not spec:
+            return
+        p_pr = paragraph._p.get_or_add_pPr()
+        for tag in ("a:buNone", "a:buFont", "a:buClr", "a:buChar", "a:buAutoNum"):
+            child = p_pr.find(qn(tag))
+            if child is not None:
+                p_pr.remove(child)
+
+        marker_x = float(spec.get("marker_x", box_left_px))
+        body_x = float(spec.get("body_x", marker_x + 14.0))
+        body_indent_px = body_x - float(box_left_px)
+        marker_indent_px = marker_x - float(box_left_px)
+        body_indent_px = max(6.0, min(float(box_width_px) - 1.0,
+                                      body_indent_px))
+        marker_indent_px = max(0.0, min(body_indent_px - 2.0,
+                                        marker_indent_px))
+        p_pr.set("marL", str(int(self.w(body_indent_px))))
+        p_pr.set("indent", str(int(self.w(marker_indent_px - body_indent_px))))
+
+        font = el.get("font") or el.get("font_name") or DEFAULT_FONT
+        bu_font = OxmlElement("a:buFont")
+        bu_font.set("typeface", font)
+        p_pr.append(bu_font)
+
+        hex_color = rgb_hex(el.get("color"))
+        if hex_color:
+            bu_clr = OxmlElement("a:buClr")
+            srgb = OxmlElement("a:srgbClr")
+            srgb.set("val", hex_color)
+            bu_clr.append(srgb)
+            p_pr.append(bu_clr)
+
+        if spec.get("kind") == "ordered":
+            bu_auto = OxmlElement("a:buAutoNum")
+            bu_auto.set("type", str(spec.get("auto_type") or "arabicPeriod"))
+            bu_auto.set("startAt", str(int(spec.get("start") or 1)))
+            p_pr.append(bu_auto)
+        else:
+            bu_char = OxmlElement("a:buChar")
+            bu_char.set("char", str(spec.get("marker") or "•"))
+            p_pr.append(bu_char)
 
     def image_path(self, value: str) -> Path:
         path = Path(value)
@@ -358,6 +509,7 @@ class Builder:
         shape.line.fill.background()
         tf = shape.text_frame
         tf.clear()
+        tf.auto_size = MSO_AUTO_SIZE.NONE
         tf.word_wrap = False
         margin = float(el.get("margin", 0))
         tf.margin_left = self.w(margin)
@@ -373,11 +525,12 @@ class Builder:
         # is used; size and bold are always inherited from `el`.
         runs_spec = el.get("runs")
         if runs_spec:
+            runs_spec = self.strip_list_marker_runs(el, runs_spec)
             # Split runs across explicit \n line breaks: each line gets
             # its own paragraph, runs within a line stay inline.
             paragraph_runs: list[list[dict]] = [[]]
             for r in runs_spec:
-                segments = str(r.get("text", "")).split("\n")
+                segments = ppt_safe_text(r.get("text", "")).split("\n")
                 for s_idx, seg in enumerate(segments):
                     if s_idx > 0:
                         paragraph_runs.append([])
@@ -386,11 +539,14 @@ class Builder:
                             "text": seg,
                             "color": r.get("color"),
                             "size": r.get("size"),
+                            "bold": r.get("bold"),
                         })
             for p_idx, line_runs in enumerate(paragraph_runs):
                 p = tf.paragraphs[0] if p_idx == 0 else tf.add_paragraph()
                 p.alignment = align(el.get("align"))
                 p.line_spacing = float(el.get("line_spacing", 1.05))
+                if p_idx == 0:
+                    self.apply_paragraph_list_style(p, el, left, width)
                 if not line_runs:
                     # Empty paragraph (consecutive newlines); add a blank
                     # run with the element default color so the line keeps
@@ -407,13 +563,19 @@ class Builder:
                         run_spec["color"] = r["color"]
                     if r.get("size"):
                         run_spec["size"] = r["size"]
+                    if r.get("bold") is not None:
+                        run_spec["bold"] = bool(r["bold"])
                     self.set_font(run, run_spec)
         else:
-            lines = str(el.get("text", "")).split("\n")
+            text = self.strip_list_marker_text(
+                el, ppt_safe_text(el.get("text", "")))
+            lines = text.split("\n")
             for idx, line in enumerate(lines):
                 p = tf.paragraphs[0] if idx == 0 else tf.add_paragraph()
                 p.alignment = align(el.get("align"))
                 p.line_spacing = float(el.get("line_spacing", 1.05))
+                if idx == 0:
+                    self.apply_paragraph_list_style(p, el, left, width)
                 run = p.add_run()
                 run.text = line
                 self.set_font(run, el)
@@ -505,7 +667,7 @@ class Builder:
         for i, row_h in enumerate(el.get("row_heights", [])[:rows]):
             tbl.rows[i].height = self.h(float(row_h))
 
-        default_font = el.get("font", "Microsoft YaHei")
+        default_font = el.get("font", DEFAULT_FONT)
         default_size = float(el.get("size", 14))
         default_color = el.get("color", "#222222")
         default_align = el.get("align", "left")
@@ -579,6 +741,7 @@ class Builder:
             line.line.dash_style = dash
 
     def add_slide(self, spec: dict[str, Any]) -> None:
+        self.set_slide_coordinate_space(spec)
         slide = self.prs.slides.add_slide(self.prs.slide_layouts[6])
         bg = rgb(spec.get("background", self.layout.get("background", "#FFFFFF")))
         if bg is not None:

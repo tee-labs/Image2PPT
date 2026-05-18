@@ -25,18 +25,35 @@ def expand_layouts(values: list[str]) -> list[Path]:
             # deck layout in the same directory. Otherwise rerunning
             # `--layouts layouts --out layouts/combined.layout.json` feeds the
             # old combined deck back into itself and doubles the slide count.
-            page_layouts = sorted(path.glob("*.layout.json"))
+            page_layouts = sorted(path.glob("page_*.layout.json"))
             candidates = page_layouts if page_layouts else sorted(path.glob("*.json"))
-            files.extend(p for p in candidates if p.name != "combined.layout.json")
+            files.extend(
+                p for p in candidates
+                if not p.name.startswith("combined.")
+                and p.name != "combined.layout.json"
+            )
         else:
             files.append(path)
     return files
 
 
 def slide_specs(doc: dict[str, Any]) -> list[dict[str, Any]]:
+    inherited = {
+        "source_width": doc.get("source_width") or doc.get("canvas", {}).get("width"),
+        "source_height": doc.get("source_height") or doc.get("canvas", {}).get("height"),
+        "slide_size": doc.get("slide_size"),
+        "background": doc.get("background"),
+    }
     if doc.get("slides"):
-        return list(doc["slides"])
-    return [{"elements": doc.get("elements", []), "background": doc.get("background")}]
+        specs = []
+        for raw in doc["slides"]:
+            slide = dict(raw)
+            for key, value in inherited.items():
+                if value is not None:
+                    slide.setdefault(key, value)
+            specs.append(slide)
+        return specs
+    return [{"elements": doc.get("elements", []), **inherited}]
 
 
 def main() -> None:
