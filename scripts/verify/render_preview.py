@@ -68,47 +68,69 @@ def which(name: str, override: str | None) -> str:
     return found
 
 
-def main() -> int:
-    args = parse_args()
-    pptx = Path(args.pptx).resolve()
-    if not pptx.exists():
-        sys.stderr.write(f"ERROR: pptx not found: {pptx}\n")
+def run(*, pptx: str, out_dir: str,
+        dpi: int = 100, keep_pdf: bool = False,
+        soffice: str | None = None,
+        pdftoppm: str | None = None,
+        verbose: bool = True) -> int:
+    """Programmatic entry — same contract as the CLI flags.
+
+    Calibration scripts call this directly to skip per-iteration Python
+    startup (LibreOffice + pdftoppm themselves still fork, but that's
+    intrinsic to the rendering toolchain).
+    """
+    pptx_path = Path(pptx).resolve()
+    if not pptx_path.exists():
+        sys.stderr.write(f"ERROR: pptx not found: {pptx_path}\n")
         return 1
-    out_dir = Path(args.out_dir).resolve()
-    out_dir.mkdir(parents=True, exist_ok=True)
-    previews_dir = out_dir / "previews"
+    out_dir_path = Path(out_dir).resolve()
+    out_dir_path.mkdir(parents=True, exist_ok=True)
+    previews_dir = out_dir_path / "previews"
     previews_dir.mkdir(parents=True, exist_ok=True)
 
-    soffice = which("soffice", args.soffice)
-    pdftoppm = which("pdftoppm", args.pdftoppm)
+    soffice_bin = which("soffice", soffice)
+    pdftoppm_bin = which("pdftoppm", pdftoppm)
 
-    print(f"[render_preview] {pptx.name} → PDF via {soffice}")
+    if verbose:
+        print(f"[render_preview] {pptx_path.name} → PDF via {soffice_bin}")
     subprocess.run(
-        [soffice, "--headless", "--convert-to", "pdf",
-         "--outdir", str(out_dir), str(pptx)],
+        [soffice_bin, "--headless", "--convert-to", "pdf",
+         "--outdir", str(out_dir_path), str(pptx_path)],
         check=True,
         env=fontconfig_env(),
+        capture_output=not verbose,
     )
-    pdf_path = out_dir / (pptx.stem + ".pdf")
+    pdf_path = out_dir_path / (pptx_path.stem + ".pdf")
     if not pdf_path.exists():
         sys.stderr.write(f"ERROR: PDF not produced at {pdf_path}\n")
         return 2
 
-    print(f"[render_preview] {pdf_path.name} → PNGs @ {args.dpi}dpi")
+    if verbose:
+        print(f"[render_preview] {pdf_path.name} → PNGs @ {dpi}dpi")
     subprocess.run(
-        [pdftoppm, "-png", "-r", str(args.dpi), str(pdf_path),
+        [pdftoppm_bin, "-png", "-r", str(dpi), str(pdf_path),
          str(previews_dir / "page")],
         check=True,
+        capture_output=not verbose,
     )
 
-    if not args.keep_pdf:
+    if not keep_pdf:
         pdf_path.unlink()
-        print(f"[render_preview] removed intermediate {pdf_path.name} "
-              "(use --keep-pdf to retain).")
+        if verbose:
+            print(f"[render_preview] removed intermediate {pdf_path.name} "
+                  "(use --keep-pdf to retain).")
 
     pngs = sorted(previews_dir.glob("page-*.png"))
-    print(f"[render_preview] {len(pngs)} previews in {previews_dir}")
+    if verbose:
+        print(f"[render_preview] {len(pngs)} previews in {previews_dir}")
     return 0
+
+
+def main() -> int:
+    args = parse_args()
+    return run(pptx=args.pptx, out_dir=args.out_dir, dpi=args.dpi,
+               keep_pdf=args.keep_pdf, soffice=args.soffice,
+               pdftoppm=args.pdftoppm)
 
 
 if __name__ == "__main__":

@@ -255,21 +255,28 @@ def main() -> int:
     )
 
     # ---- Stage 3: build_pptx_from_layout ----
-    banner("3/5  build_pptx_from_layout")
-    ts = time.time()
-    stage3_pptx_path = draft_pptx_path if should_calibrate else pptx_path
-    r = subprocess.run(
-        [sys.executable,
-         str(SCRIPTS_ROOT / "deck" / "build_pptx_from_layout.py"),
-         "--layout", str(combined_path),
-         "--assets-root", str(work),
-         "--out", str(stage3_pptx_path)],
-        check=True, capture_output=True, text=True,
-    )
-    if r.stdout.strip():
-        print(r.stdout.strip())
-    print(f"  -> {stage3_pptx_path}")
-    print(f"  stage 3 done in {time.time() - ts:.1f}s", flush=True)
+    # When calibrating, calibration scripts only consume the layout JSON
+    # (they build their own measurement-only cal.pptx internally). The
+    # final pptx is produced by stage 3c. So the intermediate draft pptx
+    # would just be overwritten — skip it.
+    if should_calibrate:
+        banner("3/5  build_pptx_from_layout SKIPPED "
+               "(draft is unused; final pptx built in stage 3c)")
+    else:
+        banner("3/5  build_pptx_from_layout")
+        ts = time.time()
+        r = subprocess.run(
+            [sys.executable,
+             str(SCRIPTS_ROOT / "deck" / "build_pptx_from_layout.py"),
+             "--layout", str(combined_path),
+             "--assets-root", str(work),
+             "--out", str(pptx_path)],
+            check=True, capture_output=True, text=True,
+        )
+        if r.stdout.strip():
+            print(r.stdout.strip())
+        print(f"  -> {pptx_path}")
+        print(f"  stage 3 done in {time.time() - ts:.1f}s", flush=True)
 
     # ---- Stage 3b/3c: closed-loop text calibration ----
     if should_calibrate:
@@ -300,17 +307,10 @@ def main() -> int:
         )
         if r.stdout.strip():
             print(r.stdout.strip())
-        r = subprocess.run(
-            [sys.executable,
-             str(SCRIPTS_ROOT / "deck" / "build_pptx_from_layout.py"),
-             "--layout", str(combined_path),
-             "--assets-root", str(work),
-             "--out", str(draft_pptx_path)],
-            check=True, capture_output=True, text=True,
-        )
-        if r.stdout.strip():
-            print(r.stdout.strip())
-        print(f"  -> {draft_pptx_path}")
+        # Intermediate draft pptx between size and position calibration
+        # was built here for debug visibility but never consumed —
+        # calibrate_text_positions reads the layout JSON, not the pptx.
+        # The final pptx is built in stage 3c.
         print(f"  stage 3b done in {time.time() - ts:.1f}s", flush=True)
 
         banner("3c/5  calibrate_text_positions")

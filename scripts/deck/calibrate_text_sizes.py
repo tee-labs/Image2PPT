@@ -14,7 +14,7 @@ import argparse
 import copy
 import json
 import math
-import subprocess
+import shutil
 import sys
 from pathlib import Path
 from typing import Any
@@ -40,6 +40,12 @@ from inventory_to_layout import (  # noqa: E402
     _sample_background_for_bbox,
     _target_text_metrics,
 )
+
+# In-process render+build to skip per-iteration subprocess startup.
+sys.path.insert(0, str(SCRIPTS_ROOT / "deck"))
+sys.path.insert(0, str(SCRIPTS_ROOT / "verify"))
+import build_pptx_from_layout as _builder  # noqa: E402
+import render_preview as _render  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
@@ -69,8 +75,20 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def _run(cmd: list[str]) -> None:
-    subprocess.run(cmd, check=True, capture_output=True, text=True)
+def _build_pptx(layout_path: Path, out_path: Path,
+                assets_root: Path | None) -> None:
+    _builder.run(
+        layout=str(layout_path),
+        out=str(out_path),
+        assets_root=str(assets_root) if assets_root else None,
+    )
+
+
+def _render_pptx(pptx_path: Path, out_dir: Path, dpi: int) -> None:
+    _render.run(
+        pptx=str(pptx_path), out_dir=str(out_dir),
+        dpi=dpi, verbose=False,
+    )
 
 
 def _clamp(value: float, lo: float, hi: float) -> float:
@@ -829,20 +847,8 @@ def main() -> int:
             json.dumps(cal_layout, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
-        _run([
-            sys.executable,
-            str(SCRIPTS_ROOT / "deck" / "build_pptx_from_layout.py"),
-            "--layout", str(cal_layout_path),
-            "--assets-root", str(assets_root),
-            "--out", str(cal_pptx_path),
-        ])
-        _run([
-            sys.executable,
-            str(SCRIPTS_ROOT / "verify" / "render_preview.py"),
-            "--pptx", str(cal_pptx_path),
-            "--out-dir", str(iter_dir),
-            "--dpi", str(args.dpi),
-        ])
+        _build_pptx(cal_layout_path, cal_pptx_path, assets_root)
+        _render_pptx(cal_pptx_path, iter_dir, args.dpi)
         report = _apply_iteration(
             layout, colours, iter_dir / "previews", source_dir, iteration,
             float(args.min_size), float(args.max_size),

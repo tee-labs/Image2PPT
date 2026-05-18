@@ -775,12 +775,18 @@ class Builder:
         self.prs.save(self.out)
 
 
+def run(*, layout: str, out: str,
+        assets_root: str | None = None) -> None:
+    """Programmatic entry — same contract as the CLI flags."""
+    layout_path = Path(layout)
+    layout_data = json.loads(layout_path.read_text(encoding="utf-8-sig"))
+    root = Path(assets_root) if assets_root else layout_path.parent
+    Builder(layout_data, Path(out), root).build()
+
+
 def main() -> None:
     args = parse_args()
-    layout_path = Path(args.layout)
-    layout = json.loads(layout_path.read_text(encoding="utf-8-sig"))
-    assets_root = Path(args.assets_root) if args.assets_root else layout_path.parent
-    Builder(layout, Path(args.out), assets_root).build()
+    run(layout=args.layout, out=args.out, assets_root=args.assets_root)
     print(args.out)
 
 
