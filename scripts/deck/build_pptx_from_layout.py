@@ -234,6 +234,16 @@ def apply_size_unification(elements: list[dict[str, Any]],
             texts[i]["size"] = unified
 
 
+def apply_class_alignment(elements: list[dict[str, Any]]) -> None:
+    """Make structural classification the final paragraph alignment source."""
+    for el in elements:
+        if (el.get("type") or "").lower() != "text":
+            continue
+        class_align = el.get("style_class_align") or el.get("style_parent_column_align")
+        if class_align:
+            el["align"] = str(class_align).lower()
+
+
 def apply_title_centering(elements: list[dict[str, Any]],
                           tol_frac: float = 0.05,
                           tol_max_px: int = 25,
@@ -256,10 +266,9 @@ def apply_title_centering(elements: list[dict[str, Any]],
          (5 % of 1100 = 55 px would let stats drift 37 px off centre).
 
     When all four pass, x is re-anchored to the parent x-centre and the
-    paragraph alignment is set to centre. y is re-anchored only when y
-    also matches within tol — a y-only coincidence in a wide card is
-    usually a paragraph row sitting near the midline by accident, not a
-    title.
+    paragraph alignment is set to centre. y is intentionally left unchanged;
+    vertical placement belongs to OCR/layout calibration, while this helper
+    only fixes horizontal title centering.
     """
     images: list[tuple[float, float, float, float, float]] = []
     for el in elements:
@@ -274,6 +283,7 @@ def apply_title_centering(elements: list[dict[str, Any]],
         images.append((x, y, x + w, y + h, w * h))
     if not images:
         return
+
     for el in elements:
         if (el.get("type") or "").lower() != "text":
             continue
@@ -294,7 +304,6 @@ def apply_title_centering(elements: list[dict[str, Any]],
         bx, by, bw, bh = (float(v) for v in box)
         tx1, ty1, tx2, ty2 = bx, by, bx + bw, by + bh
         tcx = (tx1 + tx2) / 2.0
-        tcy = (ty1 + ty2) / 2.0
         # Pick the absolutely smallest image that strictly contains the
         # text — that's the visual "wrapper". Centre-test only against
         # that one parent. Falling through to larger parents (when the
@@ -316,10 +325,8 @@ def apply_title_centering(elements: list[dict[str, Any]],
         tol = min(tol_frac * (px2 - px1), float(tol_max_px))
         if abs(tcx - (px1 + px2) / 2.0) > tol:
             continue
-        best_y_centered = abs(tcy - (py1 + py2) / 2.0) <= tol
         new_x = (px1 + px2) / 2.0 - bw / 2.0
-        new_y = (py1 + py2) / 2.0 - bh / 2.0 if best_y_centered else by
-        el["box"] = [int(round(new_x)), int(round(new_y)),
+        el["box"] = [int(round(new_x)), int(round(by)),
                      int(round(bw)), int(round(bh))]
         el["align"] = "center"
 
@@ -750,6 +757,7 @@ class Builder:
         elements = spec.get("elements", [])
         apply_title_centering(elements)
         apply_size_unification(elements)
+        apply_class_alignment(elements)
         for el in elements:
             kind = el.get("type", "shape").lower()
             if kind == "text":

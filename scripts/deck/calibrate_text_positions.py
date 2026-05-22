@@ -190,6 +190,17 @@ def _source_for_slide(slide: dict[str, Any], source_dir: Path,
     return None
 
 
+def _preview_for_slide(preview_dir: Path, slide_idx: int) -> Path | None:
+    candidates = [
+        preview_dir / f"page-{slide_idx + 1}.png",
+        preview_dir / f"page-{slide_idx + 1:02d}.png",
+    ]
+    for path in candidates:
+        if path.exists():
+            return path
+    return None
+
+
 def _source_to_preview_transform(slide: dict[str, Any],
                                  preview_shape: tuple[int, int]) -> tuple[float, float, float]:
     ph, pw = preview_shape
@@ -486,8 +497,8 @@ def _apply_iteration(layout: dict[str, Any],
             c for (slide_no, _text_no), c in colours.items()
             if slide_no == s_idx
         ]
-        preview_path = preview_dir / f"page-{s_idx + 1}.png"
-        preview_bgr = cv2.imread(str(preview_path))
+        preview_path = _preview_for_slide(preview_dir, s_idx)
+        preview_bgr = cv2.imread(str(preview_path)) if preview_path else None
         source_path = _source_for_slide(slide, source_dir, s_idx)
         source_bgr = cv2.imread(str(source_path)) if source_path else None
         if preview_bgr is None or source_bgr is None:

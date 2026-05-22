@@ -68,6 +68,41 @@ def _sample_local_bg(
     return np.median(cluster.reshape(-1, 3), axis=0).astype(np.uint8)
 
 
+def _fill_has_reasonable_parent_support(
+    crop: np.ndarray,
+    mask: np.ndarray,
+    fill_color: np.ndarray,
+    scale: float,
+) -> bool:
+    """Whether filling this child mask would blend into the parent crop."""
+    if crop.size == 0 or mask.size == 0 or int(mask.sum()) < 4:
+        return False
+    if mask.dtype != np.bool_:
+        mask = mask.astype(bool)
+    patch = mask.astype(np.uint8) * 255
+    patch = cv2.dilate(
+        patch,
+        np.ones((3, 3), np.uint8),
+        iterations=max(1, int(round(5 * scale))),
+    )
+    patch_mask = patch > 0
+    ring = cv2.dilate(
+        patch,
+        np.ones((3, 3), np.uint8),
+        iterations=max(2, int(round(4 * scale))),
+    ) > 0
+    ring &= ~patch_mask
+    if int(ring.sum()) < max(12, int(round(20 * scale * scale))):
+        return False
+    pixels = crop[ring].reshape(-1, 3).astype(np.int16)
+    fill = np.asarray(fill_color, dtype=np.int16).reshape(-1)[:3]
+    diff = np.max(np.abs(pixels - fill[None, :]), axis=1)
+    return (
+        float(np.percentile(diff, 90)) <= 42.0
+        or int((diff <= 50).sum()) >= 0.84 * len(diff)
+    )
+
+
 def _line_visual_support(
     crop: np.ndarray,
     shape_mask: np.ndarray,
@@ -182,17 +217,54 @@ def detect_internal_shapes(
     min_crop_dim = max(1, int(round(20 * scale)))
     if h < min_crop_dim or w < min_crop_dim:
         return [], []
-    # Sample the parent's bg from a ring along the bbox edge — these
-    # pixels reliably reflect the card colour because the parent is itself
-    # a detected component (its bbox tightly hugs its own foreground).
-    ring = max(1, int(round(3 * scale)))
-    border = np.concatenate([
-        crop[:ring, :].reshape(-1, 3),
-        crop[-ring:, :].reshape(-1, 3),
-        crop[:, :ring].reshape(-1, 3),
-        crop[:, -ring:].reshape(-1, 3),
-    ])
-    bg_color = np.median(border, axis=0)
+    # Pick the parent's fill colour as the dominant cluster of pixels
+    # inside the crop. A bbox-border ring used to work, but parent
+    # components are routinely rounded shapes (cards, capsules, circles)
+    # whose bbox corners sit on the slide background — so the ring is
+    # actually MOSTLY slide-bg, and a plain median picks white. Picking
+    # white as the "card colour" then flags the entire card body as an
+    # internal shape and fills it with white in the cleaned image.
+    #
+    # The parent's true fill is the dominant non-slide-bg colour inside
+    # the crop. Estimate slide-bg from the four crop corners (which are
+    # always outside the rounded foreground), then take the modal colour
+    # of pixels that DIFFER from slide-bg by >=20 per channel.
+    flat_full = crop.reshape(-1, 3).astype(np.int16)
+    corner_sz = max(2, int(round(4 * scale)))
+    corner_px = np.concatenate([
+        crop[:corner_sz, :corner_sz].reshape(-1, 3),
+        crop[:corner_sz, -corner_sz:].reshape(-1, 3),
+        crop[-corner_sz:, :corner_sz].reshape(-1, 3),
+        crop[-corner_sz:, -corner_sz:].reshape(-1, 3),
+    ]).astype(np.int16)
+    slide_bg = np.median(corner_px, axis=0) if corner_px.size else np.array(
+        [255, 255, 255], dtype=np.int16)
+    diff_from_slide = np.max(np.abs(flat_full - slide_bg[None, :]), axis=1)
+    inner_fg = flat_full[diff_from_slide >= 20]
+    if inner_fg.size == 0:
+        bg_color = slide_bg.astype(np.float32)
+    else:
+        quant = (inner_fg // 16) * 16
+        values, counts = np.unique(quant, axis=0, return_counts=True)
+        winner = values[int(np.argmax(counts))].astype(np.int16)
+        diff_to_mode = np.max(
+            np.abs(inner_fg - winner[None, :]), axis=1)
+        close = inner_fg[diff_to_mode <= 25]
+        if len(close) < max(8, int(0.15 * len(inner_fg))):
+            close = inner_fg
+        bg_color = np.median(close, axis=0).astype(np.float32)
+        # Bail when the parent isn't a uniformly-filled card. The
+        # internal-shape concept assumes one dominant fill that we can
+        # paint over; when the bbox covers a composite (multiple disjoint
+        # cards + connector lines + a tinted background), the modal
+        # cluster only represents 30-40 % of the foreground and the rest
+        # of the foreground gets flagged as "different from bg" — turning
+        # every card inside the composite into a fillable shape. We
+        # require the modal cluster to cover >=60 % of the foreground so
+        # only true single-card parents go through the internal-shape
+        # fill path.
+        if len(close) < 0.60 * len(inner_fg):
+            return [], []
 
     # "Different from bg" — diff >= 8 per channel. Lower than the main
     # component threshold (S>12 / gray<245) so subtle inset rectangles
@@ -250,8 +322,6 @@ def detect_internal_shapes(
         text_overlap = int((shape_mask & text_mask).sum())
         if text_overlap > 0.7 * area:
             continue
-        shapes.append((int(px1 + x), int(py1 + y),
-                       int(px1 + x + w_), int(py1 + y + h_)))
         # Fill the shape's bbox (not just the mask) so antialiased edges
         # outside the strict mask also get the bg colour. Pad ~2 px (at
         # 720-scale) to ensure clean coverage when the shape mask sits a
@@ -263,7 +333,13 @@ def detect_internal_shapes(
         ry2 = min(h, y + h_ + pad)
         rect = np.zeros((h, w), dtype=bool)
         rect[ry1:ry2, rx1:rx2] = True
-        fill_jobs.append((rect, bg_color.astype(np.uint8)))
+        local_bg = _sample_local_bg(
+            crop, rx1, ry1, rx2, ry2, bg_color.astype(np.uint8), scale)
+        if not _fill_has_reasonable_parent_support(crop, rect, local_bg, scale):
+            continue
+        shapes.append((int(px1 + x), int(py1 + y),
+                       int(px1 + x + w_), int(py1 + y + h_)))
+        fill_jobs.append((rect, local_bg.astype(np.uint8)))
     return shapes, fill_jobs
 
 
@@ -347,7 +423,7 @@ def detect_white_subicons(
     dark_min_dim = max(1, int(round(40 * scale)))
     sub_pix_min = max(1, int(round(100 * scale * scale)))
     for i in range(1, n):
-        _x, _y, w_, h_, area = stats[i]
+        x, y, w_, h_, area = (int(v) for v in stats[i])
         if area < dark_min_area or w_ < dark_min_dim or h_ < dark_min_dim:
             continue
         # Require the dark sub-shape to DENSELY fill its own bounding box.
@@ -415,6 +491,47 @@ def detect_white_subicons(
                 best = (wx, wy, ww, wh, wa)
         if best is None:
             continue
+
+        # Small near-square dark carriers (round list badges, square app
+        # buttons) are themselves the icon. Cropping only the white glyph
+        # inside them makes the extracted asset too small and leaves only
+        # faint carrier-edge fragments in the parent. For these compact
+        # badges, emit the whole dark sub-shape and erase the whole badge
+        # from the parent with the surrounding panel colour.
+        aspect = w_ / max(1, h_)
+        badge_like = (
+            0.70 <= aspect <= 1.35
+            and max(w_, h_) <= max(1, int(round(90 * scale)))
+            and min(w_, h_) >= max(1, int(round(35 * scale)))
+        )
+        if badge_like:
+            pad = max(1, int(round(3 * scale)))
+            rx1 = max(0, x - pad)
+            ry1 = max(0, y - pad)
+            rx2 = min(cw, x + w_ + pad)
+            ry2 = min(ch, y + h_ + pad)
+            local_bg = _sample_local_bg(
+                crop, rx1, ry1, rx2, ry2,
+                np.array([255, 255, 255], dtype=np.uint8),
+                scale,
+            )
+            badge_region = crop[ry1:ry2, rx1:rx2]
+            diff_local = np.abs(
+                badge_region.astype(np.int16)
+                - local_bg.astype(np.int16)
+            ).max(axis=2)
+            badge_mask = np.zeros((ch, cw), dtype=bool)
+            badge_mask[ry1:ry2, rx1:rx2] = diff_local > 10
+            badge_mask = cv2.dilate(
+                badge_mask.astype(np.uint8),
+                np.ones((3, 3), np.uint8),
+                iterations=max(1, int(round(1 * scale))),
+            ).astype(bool)
+            subicons.append((int(px1 + rx1), int(py1 + ry1),
+                             int(px1 + rx2), int(py1 + ry2)))
+            fill_jobs.append((badge_mask, local_bg))
+            continue
+
         wx, wy, ww, wh, _ = best
         # Pad the bbox slightly (~3 px at 720-scale) so antialiased edge
         # pixels just outside the morph result also get covered by the
@@ -473,6 +590,73 @@ def detect_line_art_subicons(
     ])
     bg = np.median(border, axis=0) if len(border) else np.array([255, 255, 255])
 
+    # Skip line-art detection when the parent is a uniformly DARK filled
+    # card. The docstring scope is "pale circle containers or light
+    # cards" — running on a navy card flags every white pixel inside it
+    # (lock icon strokes, white pictogram fragments) as candidate
+    # line-art, then fills those pixels with the local ring sample,
+    # which in the dilated-bbox case can be mostly white (corners outside
+    # the visible card). End result: the bottom of the card gets painted
+    # over with white. Use the same modal-foreground estimate as
+    # `detect_internal_shapes` to detect "this parent is a dark card",
+    # and bail out so detect_white_subicons (which IS designed for white
+    # icons on dark cards) owns this case.
+    flat_full = crop.reshape(-1, 3).astype(np.int16)
+    corner_sz = max(2, int(round(4 * scale)))
+    corner_px = np.concatenate([
+        crop[:corner_sz, :corner_sz].reshape(-1, 3),
+        crop[:corner_sz, -corner_sz:].reshape(-1, 3),
+        crop[-corner_sz:, :corner_sz].reshape(-1, 3),
+        crop[-corner_sz:, -corner_sz:].reshape(-1, 3),
+    ]).astype(np.int16)
+    if corner_px.size:
+        slide_bg = np.median(corner_px, axis=0)
+        diff_from_slide = np.max(
+            np.abs(flat_full - slide_bg[None, :]), axis=1)
+        inner_fg = flat_full[diff_from_slide >= 20]
+        if inner_fg.size > 0:
+            quant_fg = (inner_fg // 16) * 16
+            values_fg, counts_fg = np.unique(quant_fg, axis=0,
+                                             return_counts=True)
+            winner_fg = values_fg[int(np.argmax(counts_fg))].astype(np.int16)
+            close_fg = inner_fg[np.max(
+                np.abs(inner_fg - winner_fg[None, :]), axis=1) <= 25]
+            if (len(close_fg) >= 0.50 * len(inner_fg)
+                    and len(close_fg) >= 0.20 * len(flat_full)):
+                modal_fg = np.median(close_fg, axis=0)
+                lum = float(0.114 * modal_fg[0] + 0.587 * modal_fg[1]
+                            + 0.299 * modal_fg[2])
+                if lum < 130:
+                    gray_dark = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+                    hsv_dark = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+                    light_pixel = (
+                        (gray_dark > 215)
+                        & (hsv_dark[:, :, 1] < 70)
+                    )
+                    light_u8 = cv2.morphologyEx(
+                        light_pixel.astype(np.uint8) * 255,
+                        cv2.MORPH_CLOSE,
+                        np.ones((3, 3), np.uint8),
+                    )
+                    ln, _llabels, lstats, _ = cv2.connectedComponentsWithStats(
+                        light_u8, 8)
+                    has_light_badge = False
+                    min_light_area = max(80, int(round(350 * scale * scale)))
+                    min_light_side = max(8, int(round(20 * scale)))
+                    for li in range(1, ln):
+                        lx, ly, lw, lh, larea = (
+                            int(v) for v in lstats[li])
+                        if larea < min_light_area:
+                            continue
+                        if lw < min_light_side or lh < min_light_side:
+                            continue
+                        if larea / float(max(1, lw * lh)) < 0.45:
+                            continue
+                        has_light_badge = True
+                        break
+                    if not has_light_badge:
+                        return [], []
+
     gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
     hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
     diff_bg = np.abs(crop.astype(int) - bg.astype(int)).max(axis=2)
@@ -523,6 +707,40 @@ def detect_line_art_subicons(
         shape_mask = labels == i
         if int((shape_mask & text_mask).sum()) > 0.35 * area:
             continue
+
+        # Skip candidates that sit at the bottom edge of a dark uniform
+        # card — e.g. a white lock outline drawn on a navy carrier card
+        # in a composite parent. detect_white_subicons is the correct
+        # detector for white-on-dark icons, and letting line_subicons fire
+        # here inpaints the lock area (and a few px above it) with the
+        # candidate's local ring colour. When the seed extends past the
+        # card edge that ring mixes navy and slide-white and the white
+        # side wins, leaving a visible white notch carved into the card.
+        # Detect the case by sampling a band just ABOVE the seed bbox:
+        # if those pixels are dominantly dark / saturated, the lock is
+        # nested in a dark card and we hand it off to detect_white_subicons
+        # (or accept that it stays in the parent's image crop).
+        band_h = max(4, int(round(8 * scale)))
+        by1 = max(0, y - band_h)
+        by2 = y
+        bx1 = max(0, x - 2)
+        bx2 = min(cw, x + w_ + 2)
+        if by2 > by1 and bx2 > bx1:
+            above = crop[by1:by2, bx1:bx2].reshape(-1, 3)
+            if len(above) >= 12:
+                gb_a = cv2.cvtColor(above.reshape(-1, 1, 3),
+                                    cv2.COLOR_BGR2GRAY).reshape(-1)
+                hb_a = cv2.cvtColor(above.reshape(-1, 1, 3),
+                                    cv2.COLOR_BGR2HSV).reshape(-1, 3)
+                above_dark = ((gb_a < 130)
+                              | ((hb_a[:, 1] > 80) & (gb_a < 200)))
+                if int(above_dark.sum()) >= 0.55 * len(above):
+                    seed_light = (
+                        (gray[y:y + h_, x:x + w_] > 215)
+                        & (hsv[y:y + h_, x:x + w_, 1] < 70)
+                    )
+                    if int(seed_light.sum()) < 0.20 * bbox_area:
+                        continue
 
         duplicate = False
         for ex1, ey1, ex2, ey2 in kept:

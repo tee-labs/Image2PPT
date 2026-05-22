@@ -101,6 +101,32 @@ def parse_args() -> argparse.Namespace:
                    help="Parallel workers for stage 1 per-page processing. "
                         "0 = auto (min(physical_cpu, n_pages, 8)). "
                         "1 = serial (in-process, no fork).")
+    p.add_argument("--mode", choices=["full", "background-only"],
+                   default="full",
+                   help="full (default): erase + inventory + icon "
+                        "extraction → editable PPT with vector icons. "
+                        "background-only: erase only; the cleaned page "
+                        "image becomes one full-slide background and "
+                        "OCR text is laid on top as editable text boxes. "
+                        "Skips inventory, icon extraction, slot "
+                        "classification and text calibration. Faster, "
+                        "no icon artifacts, but icons aren't editable.")
+    p.add_argument("--stop-after",
+                   choices=["erase", "layout", "combine", "classify",
+                            "calibrate", "build", "qa"],
+                   default=None,
+                   help="Stop the pipeline after the named stage. "
+                        "erase: per-page clean.png written. "
+                        "layout: per-page layout.json written. "
+                        "combine: combined.layout.json written. "
+                        "classify: text-slot classes applied. "
+                        "calibrate: text size/position calibration done. "
+                        "build: slides.pptx written. "
+                        "qa: qa.json written.")
+    p.add_argument("--interactive", action="store_true",
+                   help="After each stage prompt the user to continue / "
+                        "stop. Intermediate output paths are printed so "
+                        "the user can inspect before proceeding.")
     return p.parse_args()
 
 
@@ -112,15 +138,67 @@ def _process_page_worker(payload: dict) -> dict:
     """
     num = payload["num"]
     t = time.time()
-    result = rp.process_page(
-        num, Path(payload["src"]), Path(payload["work"]),
-        detect_tables_flag=payload["detect_tables"],
-        table_score_threshold=payload["table_score_threshold"],
-        icon_review_dump=payload["icon_review"],
-        icon_decisions=payload["icon_decisions"],
-    )
+    if payload.get("mode") == "background-only":
+        result = rp.process_page_simple(
+            num, Path(payload["src"]), Path(payload["work"]),
+        )
+    else:
+        result = rp.process_page(
+            num, Path(payload["src"]), Path(payload["work"]),
+            detect_tables_flag=payload["detect_tables"],
+            table_score_threshold=payload["table_score_threshold"],
+            icon_review_dump=payload["icon_review"],
+            icon_decisions=payload["icon_decisions"],
+        )
     result["_elapsed"] = time.time() - t
     return result
+
+
+# Stage names in pipeline order. Used to decide whether --stop-after
+# halts before / after a given stage, and to drive the --interactive
+# prompt. Stages not present in a particular mode (e.g. classify and
+# calibrate in background-only) are simply skipped without affecting
+# the ordering.
+_STAGE_ORDER = ["erase", "layout", "combine", "classify",
+                "calibrate", "build", "qa", "render"]
+
+
+def _stage_index(name: str) -> int:
+    return _STAGE_ORDER.index(name)
+
+
+def _should_stop_after(args, stage: str) -> bool:
+    if not args.stop_after:
+        return False
+    return _stage_index(stage) >= _stage_index(args.stop_after)
+
+
+def _interactive_gate(args, stage: str, *, artifacts: list[Path]) -> bool:
+    """Prompt the user after a stage. Returns True to continue, False to stop.
+
+    No-op (returns True) when --interactive isn't set. Printing the
+    artifact paths before prompting lets the user open them in another
+    terminal / viewer before deciding.
+    """
+    if not args.interactive:
+        return True
+    print(f"\n  [interactive] stage `{stage}` complete.")
+    for a in artifacts:
+        if a is None:
+            continue
+        marker = "" if Path(a).exists() else "  (missing)"
+        print(f"    artifact: {a}{marker}")
+    while True:
+        resp = input("  continue? [Y/n/abort] ").strip().lower()
+        if resp in ("", "y", "yes"):
+            return True
+        if resp in ("n", "no", "stop"):
+            print("  stopping after this stage (user choice).")
+            return False
+        if resp in ("a", "abort"):
+            sys.stderr.write("  aborted by user.\n")
+            sys.exit(130)
+        print("  please answer y / n / abort")
 
 
 def _auto_workers(n_pages: int) -> int:
@@ -152,10 +230,17 @@ def main() -> int:
     layouts_dir.mkdir(parents=True, exist_ok=True)
 
     t_total = time.time()
+    simple_mode = args.mode == "background-only"
+    if simple_mode:
+        print("  mode: background-only (full-page background + editable text)")
 
     # ---- Stage 1: run_pipeline ----
+    nums: list[str] = []
     if not args.skip_pipeline:
-        banner("1/5  run_pipeline (erase + inventory + layout)")
+        stage1_label = ("run_pipeline (erase only, simple layout)"
+                        if simple_mode
+                        else "run_pipeline (erase + inventory + layout)")
+        banner(f"1/5  {stage1_label}")
         ts = time.time()
         nums = (
             [n.strip().zfill(2) for n in args.pages.split(",")]
@@ -173,6 +258,7 @@ def main() -> int:
             ctx = mp.get_context("spawn")
             payloads = [{
                 "num": n, "src": str(src), "work": str(work),
+                "mode": args.mode,
                 "detect_tables": args.detect_tables,
                 "table_score_threshold": args.table_score_threshold,
                 "icon_review": args.icon_review,
@@ -200,13 +286,16 @@ def main() -> int:
             for n in nums:
                 t = time.time()
                 try:
-                    r = rp.process_page(
-                        n, src, work,
-                        detect_tables_flag=args.detect_tables,
-                        table_score_threshold=args.table_score_threshold,
-                        icon_review_dump=args.icon_review,
-                        icon_decisions=args.icon_decisions,
-                    )
+                    if simple_mode:
+                        r = rp.process_page_simple(n, src, work)
+                    else:
+                        r = rp.process_page(
+                            n, src, work,
+                            detect_tables_flag=args.detect_tables,
+                            table_score_threshold=args.table_score_threshold,
+                            icon_review_dump=args.icon_review,
+                            icon_decisions=args.icon_decisions,
+                        )
                 except Exception as exc:
                     sys.stderr.write(f"page {n}: ERROR {exc}\n")
                     raise
@@ -217,6 +306,25 @@ def main() -> int:
         print(f"  stage 1 done in {time.time() - ts:.1f}s", flush=True)
     else:
         banner("1/5  run_pipeline SKIPPED")
+
+    # process_page / process_page_simple are monolithic — by the time
+    # stage 1 returns, both the cleaned PNG and the per-page layout JSON
+    # are on disk. So `--stop-after erase` and `--stop-after layout`
+    # both halt here. The interactive gate fires twice so the user can
+    # inspect cleaned images and then layout JSON separately if they
+    # want to.
+    clean_dir = work / "inventory"
+    if _should_stop_after(args, "erase"):
+        print(f"\n--stop-after=erase: cleaned pages at {clean_dir}/, "
+              f"layouts at {layouts_dir}/")
+        return 0
+    if not _interactive_gate(args, "erase", artifacts=[clean_dir]):
+        return 0
+    if _should_stop_after(args, "layout"):
+        print(f"\n--stop-after=layout: per-page layouts at {layouts_dir}/")
+        return 0
+    if not _interactive_gate(args, "layout", artifacts=[layouts_dir]):
+        return 0
 
     # ---- Stage 2: combine_layouts ----
     banner("2/5  combine_layouts")
@@ -230,26 +338,48 @@ def main() -> int:
     print(r.stdout.strip())
     print(f"  stage 2 done in {time.time() - ts:.1f}s", flush=True)
 
-    # ---- Stage 2b: structural text-slot classes ----
-    banner("2b/5  classify_text_slots")
-    ts = time.time()
-    slot_report = work / "debug" / "text_slot_classes.json"
-    r = subprocess.run(
-        [sys.executable,
-         str(SCRIPTS_ROOT / "deck" / "classify_text_slots.py"),
-         "--layout", str(combined_path),
-         "--out", str(slot_report),
-         "--apply",
-         "--min-group-size", "2",
-         "--min-apply-size", "3"],
-        check=True, capture_output=True, text=True,
-    )
-    if r.stdout.strip():
-        print(r.stdout.strip())
-    print(f"  -> {slot_report}")
-    print(f"  stage 2b done in {time.time() - ts:.1f}s", flush=True)
+    if _should_stop_after(args, "combine"):
+        print(f"\n--stop-after=combine: {combined_path}")
+        return 0
+    if not _interactive_gate(args, "combine", artifacts=[combined_path]):
+        return 0
 
-    should_calibrate = (
+    # ---- Stage 2b: structural text-slot classes ----
+    # In background-only mode the editable text is laid out from raw OCR
+    # bboxes with no structural grouping, so style-class clustering has
+    # nothing meaningful to merge — skip it.
+    if simple_mode:
+        banner("2b/5  classify_text_slots SKIPPED (background-only mode)")
+    else:
+        banner("2b/5  classify_text_slots")
+        ts = time.time()
+        slot_report = work / "debug" / "text_slot_classes.json"
+        r = subprocess.run(
+            [sys.executable,
+             str(SCRIPTS_ROOT / "deck" / "classify_text_slots.py"),
+             "--layout", str(combined_path),
+             "--out", str(slot_report),
+             "--apply",
+             "--min-group-size", "2",
+             "--min-apply-size", "3"],
+            check=True, capture_output=True, text=True,
+        )
+        if r.stdout.strip():
+            print(r.stdout.strip())
+        print(f"  -> {slot_report}")
+        print(f"  stage 2b done in {time.time() - ts:.1f}s", flush=True)
+        if _should_stop_after(args, "classify"):
+            print(f"\n--stop-after=classify: {slot_report}")
+            return 0
+        if not _interactive_gate(args, "classify", artifacts=[slot_report]):
+            return 0
+
+    # In background-only mode the cleaned PNG already carries the
+    # original glyphs visually, so even if our overlay sizing is off
+    # by a few points it doesn't move ink underneath. Calibration is
+    # expensive (re-renders PPTX → PDF → PNG twice) and only refines
+    # things the user can't see — skip by default.
+    should_calibrate = False if simple_mode else (
         (not args.skip_render)
         if args.calibrate_text is None else args.calibrate_text
     )
@@ -358,6 +488,19 @@ def main() -> int:
         banner("3b/5  calibrate_text_sizes SKIPPED")
         banner("3c/5  calibrate_text_positions SKIPPED")
 
+    if _should_stop_after(args, "calibrate"):
+        print(f"\n--stop-after=calibrate: layout={combined_path}, "
+              f"pptx={pptx_path}")
+        return 0
+    if not _interactive_gate(args, "calibrate",
+                             artifacts=[combined_path, pptx_path]):
+        return 0
+    if _should_stop_after(args, "build"):
+        print(f"\n--stop-after=build: {pptx_path}")
+        return 0
+    if not _interactive_gate(args, "build", artifacts=[pptx_path]):
+        return 0
+
     # ---- Stage 4: inspect_pptx ----
     banner("4/5  inspect_pptx")
     ts = time.time()
@@ -378,6 +521,12 @@ def main() -> int:
             )
     except (OSError, json.JSONDecodeError):
         pass
+
+    if _should_stop_after(args, "qa"):
+        print(f"\n--stop-after=qa: {qa_path}")
+        return 0
+    if not _interactive_gate(args, "qa", artifacts=[qa_path]):
+        return 0
 
     # ---- Stage 5: render_preview ----
     if not args.skip_render:

@@ -68,6 +68,7 @@ sys.path.insert(0, str(SCRIPTS_ROOT / "tables"))
 import erase_text as et
 import build_inventory as bi
 import inventory_to_layout as i2l
+import simple_layout as sl
 import _heuristics as heur
 import detect_tables as dt
 from image_sources import find_page_image, supported_image_formats
@@ -891,6 +892,52 @@ def process_page(num: str, src_dir: Path, work: Path,
         text_count = img_count = 0
     return {"page": num, "text": text_count, "image": img_count,
             "tables": len(table_layout_elements)}
+
+
+def process_page_simple(num: str, src_dir: Path, work: Path) -> dict:
+    """Erase text only, then emit a minimal background+text-overlay layout.
+
+    Used by build_deck's `--mode background-only`. Skips inventory and
+    inventory_to_layout entirely. The cleaned PNG becomes a full-slide
+    background image; OCR items become editable text boxes on top.
+    """
+    src_path = find_page_image(src_dir, num)
+    ocr_path = work / "ocr" / f"page_{num}.ocr.json"
+    clean_path = work / "inventory" / f"page_{num}.clean.png"
+    layout_path = work / "layouts" / f"page_{num}.layout.json"
+    debug_dir = work / "debug"
+
+    clean_path.parent.mkdir(parents=True, exist_ok=True)
+    layout_path.parent.mkdir(parents=True, exist_ok=True)
+    debug_dir.mkdir(parents=True, exist_ok=True)
+
+    # erase_text reads OCR + source image and writes the cleaned PNG.
+    # No icon-review / table pre-passes in simple mode — those exist to
+    # protect downstream inventory/icon extraction, which we're skipping.
+    et.run(
+        image=str(src_path),
+        ocr=str(ocr_path),
+        out=str(clean_path),
+        debug_dir=str(debug_dir),
+    )
+
+    src_img = cv2.imread(str(src_path))
+    if src_img is None:
+        raise RuntimeError(f"cannot read source image: {src_path}")
+    H, W = src_img.shape[:2]
+
+    # Path stored in the layout is relative to build_deck's assets_root
+    # (= the work-dir), so combine_layouts → build_pptx_from_layout
+    # resolves it back to <work>/inventory/page_NN.clean.png.
+    clean_rel = f"inventory/page_{num}.clean.png"
+    return sl.write_layout(
+        page_num=num,
+        source_width=W,
+        source_height=H,
+        clean_rel_path=clean_rel,
+        ocr_path=ocr_path,
+        out_layout_path=layout_path,
+    )
 
 
 # =============================================================================

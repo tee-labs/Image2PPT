@@ -27,6 +27,7 @@ from calibrate_text_positions import (  # noqa: E402
     _box_to_preview,
     _calibration_layout,
     _detect_colour_bbox,
+    _preview_for_slide,
     _source_for_slide,
     _source_to_preview_transform,
     _is_dense_small_text,
@@ -476,9 +477,13 @@ def _best_integer_size_from_char_metrics(
     # more visible drift than it fixes.
     current_h_ratio = float(current_local["median_h"]) / target_h
     current_full_h_ratio = float(current_local["full_h"]) / target_full_h
+    current_full_w_ratio = float(current_local["full_w"]) / target_full_w
     if (
-        0.90 <= current_h_ratio <= 1.10
-        or 0.92 <= current_full_h_ratio <= 1.08
+        current_full_w_ratio <= 1.08
+        and (
+            0.90 <= current_h_ratio <= 1.10
+            or 0.90 <= current_full_h_ratio <= 1.08
+        )
     ):
         return old_size
     rx1, ry1, rx2, ry2 = rendered
@@ -491,6 +496,8 @@ def _best_integer_size_from_char_metrics(
 
     ascii_heavy = float(current_local.get("ascii_ratio") or 0.0) >= 0.5
     basis = str(char_metrics.get("basis") or "")
+    visible_chars = _visible_char_count(str(el.get("text") or ""))
+    compact_label = visible_chars <= 6 and target_full_w <= 140
     # Font size should be inferred primarily from glyph height. Full-line
     # width varies with font metrics, OCR grouping, and textbox width; using
     # it as the dominant signal incorrectly shrinks long single-line text.
@@ -500,6 +507,9 @@ def _best_integer_size_from_char_metrics(
     else:
         width_weight = 0.06 if not ascii_heavy else 0.14
         height_weight = 0.86 if not ascii_heavy else 0.78
+    if compact_label:
+        width_weight = max(width_weight, 0.22 if not ascii_heavy else 0.30)
+        height_weight = min(height_weight, 0.70 if not ascii_heavy else 0.62)
     median_width_weight = max(0.0, 1.0 - width_weight - height_weight)
 
     best: tuple[float, int] | None = None
@@ -523,10 +533,21 @@ def _best_integer_size_from_char_metrics(
             + 0.03 * abs(size - old_size) / max(1.0, float(old_size))
         )
         over_limit = 1.35 if basis == "connected_components" else 1.40
+        if compact_label:
+            over_limit = 1.22 if not ascii_heavy else 1.28
         under_limit = 0.70 if basis == "connected_components" else 0.68
         if pred_full_w > target_full_w * over_limit:
-            score += 0.06 * (
+            overflow_weight = 0.32 if compact_label else 0.06
+            score += overflow_weight * (
                 pred_full_w / (target_full_w * over_limit) - 1.0)
+        # Compact and header-like single lines are visually bounded by their
+        # source ink region. If the chosen size spills a few percent wider,
+        # the tail can leave a coloured header/card and appear clipped even
+        # though the glyph height is perfect.
+        if (visible_chars <= 20
+                and pred_full_w > target_full_w * 1.03):
+            score += 2.4 * (
+                pred_full_w / (target_full_w * 1.03) - 1.0)
         if pred_full_w < target_full_w * under_limit:
             score += 0.04 * (
                 (target_full_w * under_limit) / pred_full_w - 1.0)
@@ -654,19 +675,23 @@ def _width_char_spacing(
     if "\n" in text:
         return None
     visible = _visible_char_count(text)
-    if visible < 24:
+    compact_label = 2 <= visible <= 8
+    if visible < 24 and not compact_label:
         return None
     tx1, _ty1, tx2, _ty2 = (float(v) for v in target)
     rx1, _ry1, rx2, _ry2 = rendered
     target_w = max(1.0, tx2 - tx1)
-    if target_w < 300.0:
+    if target_w < 300.0 and not compact_label:
         return None
     if float(new_size) > float(old_size):
         return None
     rendered_w = max(1.0, rx2 - rx1)
     scaled_w = rendered_w * (float(new_size) / max(1.0, float(old_size)))
     overflow = scaled_w - target_w
-    if overflow < max(8.0, target_w * 0.06):
+    min_overflow = max(8.0, target_w * 0.06)
+    if compact_label:
+        min_overflow = max(6.0, target_w * 0.12)
+    if overflow < min_overflow:
         return None
     # DrawingML run property `spc` is an em-relative tracking value.
     # LibreOffice's rendered effect is about 70% of the nominal em
@@ -676,7 +701,10 @@ def _width_char_spacing(
     gaps = max(1, visible - 1)
     denom = max(1.0, font_px * gaps * 0.70)
     spacing = int(round(-overflow * 1000.0 / denom))
-    spacing = max(-160, min(-10, spacing))
+    if compact_label:
+        spacing = int(round(spacing * 1.8))
+    lower_bound = -320 if compact_label else -160
+    spacing = max(lower_bound, min(-10, spacing))
     return spacing
 
 
@@ -724,8 +752,8 @@ def _apply_iteration(layout: dict[str, Any],
             c for (slide_no, _text_no), c in colours.items()
             if slide_no == s_idx
         ]
-        preview_path = preview_dir / f"page-{s_idx + 1}.png"
-        preview_bgr = cv2.imread(str(preview_path))
+        preview_path = _preview_for_slide(preview_dir, s_idx)
+        preview_bgr = cv2.imread(str(preview_path)) if preview_path else None
         source_path = _source_for_slide(slide, source_dir, s_idx)
         source_bgr = cv2.imread(str(source_path)) if source_path else None
         if preview_bgr is None or source_bgr is None:

@@ -394,6 +394,45 @@ def main() -> None:
     _run(parse_args())
 
 
+def _intersection_area(a: tuple[int, int, int, int],
+                       b: tuple[int, int, int, int]) -> int:
+    ax1, ay1, ax2, ay2 = a
+    bx1, by1, bx2, by2 = b
+    ox1, oy1 = max(ax1, bx1), max(ay1, by1)
+    ox2, oy2 = min(ax2, bx2), min(ay2, by2)
+    if ox2 <= ox1 or oy2 <= oy1:
+        return 0
+    return (ox2 - ox1) * (oy2 - oy1)
+
+
+def _connector_on_container_border(
+    container_box: tuple[int, int, int, int],
+    connector_box: tuple[int, int, int, int],
+) -> bool:
+    """Return true when a connector bbox is really a container border dash."""
+    px1, py1, px2, py2 = container_box
+    cx1, cy1, cx2, cy2 = connector_box
+    c_area = max(1, (cx2 - cx1) * (cy2 - cy1))
+    if _intersection_area(container_box, connector_box) < 0.80 * c_area:
+        return False
+    pw = max(1, px2 - px1)
+    ph = max(1, py2 - py1)
+    cw = max(1, cx2 - cx1)
+    ch = max(1, cy2 - cy1)
+    band = max(4, min(14, int(round(min(pw, ph) * 0.22))))
+    near_top = cy1 - py1 <= band
+    near_bottom = py2 - cy2 <= band
+    near_left = cx1 - px1 <= band
+    near_right = px2 - cx2 <= band
+    horizontal = cw >= max(12, ch * 2.0)
+    vertical = ch >= max(12, cw * 2.0)
+    if horizontal and (near_top or near_bottom):
+        return True
+    if vertical and (near_left or near_right):
+        return True
+    return bool((near_top or near_bottom) and (near_left or near_right))
+
+
 def _run(args: argparse.Namespace) -> None:
     cleaned = cv2.imread(args.clean)
     source = cv2.imread(args.source)
@@ -426,6 +465,11 @@ def _run(args: argparse.Namespace) -> None:
     clean_path = Path(args.clean)
     text_only_path = clean_path.with_name(f"{clean_path.stem}.text_only.png")
     cv2.imwrite(str(text_only_path), cleaned)
+    # Icon detection must run on the text-erased view, not the original
+    # source. Otherwise OCR glyphs can participate in connected components
+    # or saved alpha masks and later reappear as "text ghosts" inside the
+    # cropped icon asset.
+    icon_probe = cleaned.copy()
 
     # Pre-filter OCR for likely-icons and logo-band texts (these never become editable text).
     logo_bands = detect_logo_strips(ocr_data, h)
@@ -508,6 +552,252 @@ def _run(args: argparse.Namespace) -> None:
         return (int(record[0]), int(record[1]),
                 int(record[2]), int(record[3]))
 
+    def _append_foreground_record(x1: int, y1: int,
+                                  x2: int, y2: int) -> None:
+        """Append a foreground bbox unless an equivalent one exists."""
+        area = max(1, (x2 - x1) * (y2 - y1))
+        for existing in foreground_records:
+            ex1, ey1, ex2, ey2 = _box4(existing)
+            earea = max(1, (ex2 - ex1) * (ey2 - ey1))
+            size_ratio = min(area, earea) / max(area, earea)
+            if size_ratio < 0.82:
+                continue
+            ix1, iy1 = max(x1, ex1), max(y1, ey1)
+            ix2, iy2 = min(x2, ex2), min(y2, ey2)
+            if ix2 <= ix1 or iy2 <= iy1:
+                continue
+            if (ix2 - ix1) * (iy2 - iy1) >= 0.92 * min(area, earea):
+                return
+        foreground_records.append((int(x1), int(y1), int(x2), int(y2)))
+
+    def _mask_bbox(mask: np.ndarray) -> tuple[int, int, int, int] | None:
+        ys, xs = np.where(mask)
+        if len(xs) == 0:
+            return None
+        return int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1
+
+    def _ring_bg_quality(
+        crop: np.ndarray,
+        mask: np.ndarray,
+        *,
+        fallback_color: np.ndarray | None = None,
+    ) -> tuple[bool, np.ndarray]:
+        """Check whether a child can be erased cleanly from its parent.
+
+        This is deliberately conservative for small icons: if the ring around
+        the removal mask is mixed (gradient/photo/nearby artwork), return
+        false so the child stays baked into the parent instead of leaving a
+        visible scar.
+        """
+        if crop.size == 0 or mask.size == 0 or int(mask.sum()) < 4:
+            color = (fallback_color if fallback_color is not None
+                     else np.array([255, 255, 255], dtype=np.uint8))
+            return False, color.astype(np.uint8)
+        h, w = mask.shape[:2]
+        bbox = _mask_bbox(mask)
+        if bbox is None:
+            color = (fallback_color if fallback_color is not None
+                     else np.array([255, 255, 255], dtype=np.uint8))
+            return False, color.astype(np.uint8)
+        x1, y1, x2, y2 = bbox
+        pad = max(3, int(round(7 * scale)))
+        rx1, ry1 = max(0, x1 - pad), max(0, y1 - pad)
+        rx2, ry2 = min(w, x2 + pad), min(h, y2 + pad)
+        if rx2 <= rx1 or ry2 <= ry1:
+            color = (fallback_color if fallback_color is not None
+                     else np.array([255, 255, 255], dtype=np.uint8))
+            return False, color.astype(np.uint8)
+        local = crop[ry1:ry2, rx1:rx2]
+        local_mask = mask[ry1:ry2, rx1:rx2]
+        ring = np.ones(local_mask.shape, dtype=bool)
+        ring[local_mask] = False
+        pixels = local[ring]
+        if len(pixels) < max(12, s_area(20, scale)):
+            color = (fallback_color if fallback_color is not None
+                     else np.array([255, 255, 255], dtype=np.uint8))
+            return False, color.astype(np.uint8)
+
+        flat = pixels.reshape(-1, 3).astype(np.uint8)
+        quant = (flat.astype(np.uint16) // 16).astype(np.uint8)
+        keys, counts = np.unique(quant, axis=0, return_counts=True)
+        key = keys[int(np.argmax(counts))]
+        cluster = flat[(quant == key).all(axis=1)]
+        if len(cluster) < max(8, int(0.18 * len(flat))):
+            cluster = flat
+        bg = np.median(cluster.reshape(-1, 3), axis=0).astype(np.uint8)
+        diff = np.abs(flat.astype(np.int16) - bg.astype(np.int16)).max(axis=1)
+        uniform = (
+            float(np.percentile(diff, 90)) <= 38
+            or int((diff <= 45).sum()) >= 0.82 * len(diff)
+        )
+        if fallback_color is not None:
+            close_to_fill = (
+                int(np.max(np.abs(bg.astype(np.int16)
+                                  - fallback_color.astype(np.int16)))) <= 55
+            )
+            uniform = uniform and close_to_fill
+        return bool(uniform), bg
+
+    def _can_fill_child_cleanly(
+        crop: np.ndarray,
+        mask: np.ndarray,
+        fill_color: np.ndarray | None,
+    ) -> bool:
+        ok, _fill = _clean_child_fill(crop, mask, fill_color)
+        return ok
+
+    def _simulated_fill_quality(
+        crop: np.ndarray,
+        mask: np.ndarray,
+        fill_color: np.ndarray,
+    ) -> bool:
+        """Verify the actual patched parent would blend into its surround."""
+        if crop.size == 0 or mask.size == 0 or int(mask.sum()) < 4:
+            return False
+        if mask.dtype != np.bool_:
+            mask = mask.astype(bool)
+        patch_u8 = mask.astype(np.uint8) * 255
+        patch_u8 = cv2.dilate(
+            patch_u8,
+            np.ones((3, 3), np.uint8),
+            iterations=max(1, int(round(5 * scale))),
+        )
+        patch_mask = patch_u8 > 0
+        if int(patch_mask.sum()) < 4:
+            return False
+        ring_u8 = cv2.dilate(
+            patch_u8,
+            np.ones((3, 3), np.uint8),
+            iterations=max(2, int(round(4 * scale))),
+        )
+        ring = (ring_u8 > 0) & ~patch_mask
+        if int(ring.sum()) < max(12, s_area(20, scale)):
+            ring = ~patch_mask
+        if int(ring.sum()) == 0:
+            return False
+
+        patched = crop.copy()
+        inpaint_region_inplace(
+            patched, mask, scale=scale, fill_color=fill_color)
+        ring_pixels = patched[ring].reshape(-1, 3)
+        patch_pixels = patched[patch_mask].reshape(-1, 3)
+        if len(ring_pixels) == 0 or len(patch_pixels) == 0:
+            return False
+        bg = np.median(ring_pixels, axis=0).astype(np.int16)
+        patch_diff = np.max(
+            np.abs(patch_pixels.astype(np.int16) - bg[None, :]), axis=1)
+        ring_diff = np.max(
+            np.abs(ring_pixels.astype(np.int16) - bg[None, :]), axis=1)
+        patch_p90 = float(np.percentile(patch_diff, 90))
+        ring_p90 = float(np.percentile(ring_diff, 90))
+        if patch_p90 > max(42.0, ring_p90 + 20.0):
+            return False
+        return int((patch_diff <= max(48.0, ring_p90 + 24.0)).sum()) >= 0.86 * len(patch_diff)
+
+    def _clean_child_fill(
+        crop: np.ndarray,
+        mask: np.ndarray,
+        fill_color: np.ndarray | None = None,
+    ) -> tuple[bool, np.ndarray]:
+        """Return a safe fill colour for removing a child from its parent.
+
+        The detector's suggested fill can be wrong for composite parents
+        (for example a blue title bar embedded in a mostly white card).
+        Prefer the local ring colour, then simulate the actual inpaint/fill
+        and reject the child if the patched pixels do not blend with the
+        parent around the hole.
+        """
+        ok, bg = _ring_bg_quality(crop, mask)
+        if not ok and fill_color is not None:
+            ok, bg = _ring_bg_quality(
+                crop, mask, fallback_color=fill_color)
+        if not ok:
+            return False, bg
+        fill = bg.astype(np.uint8)
+        if fill_color is not None:
+            raw = np.asarray(fill_color, dtype=np.uint8).reshape(-1)[:3]
+            if int(np.max(np.abs(
+                raw.astype(np.int16) - fill.astype(np.int16)))) <= 36:
+                fill = raw.astype(np.uint8)
+        if not _simulated_fill_quality(crop, mask, fill):
+            return False, fill
+        return True, fill
+
+    def _is_connector_like(crop: np.ndarray) -> bool:
+        if crop.size == 0:
+            return False
+        h, w = crop.shape[:2]
+        if max(w, h) < s_length(26, scale):
+            return False
+        if w * h > s_area(24000, scale):
+            return False
+        gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+        hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+        diff_white = np.abs(crop.astype(np.int16) - 255).max(axis=2)
+        fg = (
+            ((gray < 235) & (diff_white > 8))
+            | ((hsv[:, :, 1] > 30) & (diff_white > 6))
+        )
+        fg_count = int(fg.sum())
+        if fg_count < s_area(12, scale):
+            return False
+        density = fg_count / float(max(1, w * h))
+        aspect = max(w, h) / float(max(1, min(w, h)))
+        if aspect >= 5.0 and density <= 0.60:
+            return True
+        if density > 0.28:
+            return False
+        ys, xs = np.where(fg)
+        if len(xs) < 8:
+            return False
+        pts = np.column_stack([xs.astype(np.float32), ys.astype(np.float32)])
+        pts -= pts.mean(axis=0, keepdims=True)
+        cov = (pts.T @ pts) / max(1, len(pts) - 1)
+        vals = np.linalg.eigvalsh(cov)
+        if vals[0] <= 1e-3:
+            return True
+        return bool(vals[1] / vals[0] >= 9.0)
+
+    def _is_container_like(crop: np.ndarray) -> bool:
+        if crop.size == 0:
+            return False
+        h, w = crop.shape[:2]
+        if w < s_length(42, scale) or h < s_length(22, scale):
+            return False
+        gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+        hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+        diff_white = np.abs(crop.astype(np.int16) - 255).max(axis=2)
+        fg = (
+            ((gray < 248) & (diff_white > 8))
+            | ((hsv[:, :, 1] > 10) & (diff_white > 6))
+        )
+        band = max(2, min(max(2, min(w, h) // 10), s_length(10, scale)))
+        top = float(np.any(fg[:band, :], axis=0).sum()) / max(1, w)
+        bottom = float(np.any(fg[-band:, :], axis=0).sum()) / max(1, w)
+        left = float(np.any(fg[:, :band], axis=1).sum()) / max(1, h)
+        right = float(np.any(fg[:, -band:], axis=1).sum()) / max(1, h)
+        edge_like = (
+            sum(v >= 0.24 for v in (top, bottom, left, right)) >= 3
+            and max(top, bottom) >= 0.45
+            and max(left, right) >= 0.45
+        )
+        fill_density = float(fg.sum()) / float(max(1, w * h))
+        filled_shape = (
+            fill_density >= 0.45
+            and max(w, h) >= s_length(70, scale)
+            and max(w, h) / float(max(1, min(w, h))) <= 8.0
+        )
+        return bool(edge_like or filled_shape)
+
+    def _foreground_role_for_box(img: np.ndarray, x1: int, y1: int,
+                                 x2: int, y2: int) -> str | None:
+        crop = img[y1:y2, x1:x2]
+        if _is_container_like(crop):
+            return "container"
+        if _is_connector_like(crop):
+            return "connector"
+        return None
+
     def _scan_internal_shapes_inplace(sx1: int, sy1: int,
                                       sx2: int, sy2: int) -> None:
         """Detect internal sub-shapes (badges, placeholders, small colored
@@ -520,7 +810,7 @@ def _run(args: argparse.Namespace) -> None:
         if sx2 - sx1 < parent_min_side or sy2 - sy1 < parent_min_side:
             return
         shapes, fill_jobs = detect_internal_shapes(
-            source, sx1, sy1, sx2, sy2,
+            icon_probe, sx1, sy1, sx2, sy2,
             ocr_text_items=ocr_text_items,
             min_dim=s_length(20, scale),
             max_dim=s_length(220, scale),
@@ -530,7 +820,11 @@ def _run(args: argparse.Namespace) -> None:
         if not shapes:
             return
         local = cleaned[sy1:sy2, sx1:sx2]
+        source_local = icon_probe[sy1:sy2, sx1:sx2]
         for (ix1, iy1, ix2, iy2), (mask_in_crop, color) in zip(shapes, fill_jobs):
+            ok, fill = _clean_child_fill(source_local, mask_in_crop, color)
+            if not ok:
+                continue
             # Same dedup rule as subicons: skip if already covered.
             duplicate = False
             for ex1, ey1, ex2, ey2 in (
@@ -557,7 +851,7 @@ def _run(args: argparse.Namespace) -> None:
             # patch reallocated the array.
             local = cleaned[sy1:sy2, sx1:sx2]
             inpaint_region_inplace(local, mask_in_crop, scale=scale,
-                                   fill_color=color)
+                                   fill_color=fill)
 
     def _scan_subicons_inplace(sx1: int, sy1: int, sx2: int, sy2: int) -> None:
         """Detect white pictograms inside any dark uniform sub-shape that
@@ -572,7 +866,7 @@ def _run(args: argparse.Namespace) -> None:
         subicon by >=50 % IoU — otherwise the same icon gets extracted
         twice and rendered on top of itself."""
         subs, fill_jobs = detect_white_subicons(
-            source, sx1, sy1, sx2, sy2,
+            icon_probe, sx1, sy1, sx2, sy2,
             ocr_text_items=ocr_text_items,
             min_dim=s_length(15, scale),
             max_dim=s_length(220, scale),
@@ -582,9 +876,13 @@ def _run(args: argparse.Namespace) -> None:
         if not subs:
             return
         local = cleaned[sy1:sy2, sx1:sx2]
+        source_local = icon_probe[sy1:sy2, sx1:sx2]
         for (ix1, iy1, ix2, iy2), (mask_in_crop, color) in zip(subs, fill_jobs):
+            ok, fill = _clean_child_fill(source_local, mask_in_crop, color)
+            if not ok:
+                continue
             duplicate = False
-            for (ex1, ey1, ex2, ey2) in subicon_records:
+            for ex1, ey1, ex2, ey2 in [_box4(r) for r in subicon_records]:
                 ox1, oy1 = max(ix1, ex1), max(iy1, ey1)
                 ox2, oy2 = min(ix2, ex2), min(iy2, ey2)
                 if ox2 <= ox1 or oy2 <= oy1:
@@ -597,10 +895,152 @@ def _run(args: argparse.Namespace) -> None:
                     break
             if duplicate:
                 continue
-            subicon_records.append((ix1, iy1, ix2, iy2))
+            color_lum = float(
+                0.114 * int(fill[0])
+                + 0.587 * int(fill[1])
+                + 0.299 * int(fill[2])
+            )
+            role = "badge_subicon" if color_lum > 160 else "subicon"
+            subicon_records.append((ix1, iy1, ix2, iy2, role))
             local = cleaned[sy1:sy2, sx1:sx2]
             inpaint_region_inplace(local, mask_in_crop, scale=scale,
-                                   fill_color=color)
+                                   fill_color=fill)
+
+    def _trim_filled_badge(
+        x1: int,
+        y1: int,
+        x2: int,
+        y2: int,
+        parent_mask: np.ndarray,
+        parent_origin: tuple[int, int],
+    ) -> tuple[int, int, int, int, np.ndarray]:
+        """Trim connector tails off a filled badge/icon bbox.
+
+        Sparse line detection can grow from a filled circular node into its
+        attached dashed connectors. Keep the dense badge as one icon and let
+        the connector records own the line segments.
+        """
+        crop = icon_probe[y1:y2, x1:x2]
+        if crop.size == 0:
+            return x1, y1, x2, y2, parent_mask
+        h, w = crop.shape[:2]
+        if max(w, h) < s_length(55, scale):
+            return x1, y1, x2, y2, parent_mask
+        gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+        hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+        dense = (gray < 170) | ((hsv[:, :, 1] > 75) & (gray < 225))
+        kernel_size = max(5, s_kernel(9, scale))
+        if kernel_size % 2 == 0:
+            kernel_size += 1
+        dense_u8 = cv2.morphologyEx(
+            dense.astype(np.uint8) * 255,
+            cv2.MORPH_OPEN,
+            cv2.getStructuringElement(
+                cv2.MORPH_ELLIPSE, (kernel_size, kernel_size)),
+        )
+        n, labels, stats, _ = cv2.connectedComponentsWithStats(dense_u8, 8)
+        best = None
+        best_label = -1
+        best_area = 0
+        min_area = s_area(900, scale)
+        min_side = s_length(34, scale)
+        for i in range(1, n):
+            bx, by, bw, bh, area = (int(v) for v in stats[i])
+            if area < min_area or bw < min_side or bh < min_side:
+                continue
+            aspect = bw / float(max(1, bh))
+            density = area / float(max(1, bw * bh))
+            if not (0.55 <= aspect <= 1.65 and density >= 0.38):
+                continue
+            if area > best_area:
+                best = (bx, by, bx + bw, by + bh)
+                best_label = i
+                best_area = area
+        if best is None:
+            return x1, y1, x2, y2, parent_mask
+
+        bx1, by1, bx2, by2 = best
+        selected = labels == best_label
+        recover_size = max(3, s_kernel(5, scale))
+        if recover_size % 2 == 0:
+            recover_size += 1
+        selected = cv2.dilate(
+            selected.astype(np.uint8),
+            cv2.getStructuringElement(
+                cv2.MORPH_ELLIPSE, (recover_size, recover_size)),
+            iterations=1,
+        ).astype(bool)
+        bw = max(1, bx2 - bx1)
+        bh = max(1, by2 - by1)
+        carrier_aspect = bw / float(bh)
+        if 0.72 <= carrier_aspect <= 1.38:
+            carrier_clip = np.zeros((h, w), dtype=np.uint8)
+            center = (int(round((bx1 + bx2) / 2.0)),
+                      int(round((by1 + by2) / 2.0)))
+            axes = (max(1, int(round(bw / 2.0))),
+                    max(1, int(round(bh / 2.0))))
+            cv2.ellipse(carrier_clip, center, axes, 0, 0, 360, 255, -1)
+            selected &= carrier_clip.astype(bool)
+
+        raw_u8 = dense.astype(np.uint8) * 255
+        rn, rlabels, rstats, _ = cv2.connectedComponentsWithStats(raw_u8, 8)
+        # Include small badge adornments directly below the main carrier
+        # (e.g. a lock hanging from a telecom node), but not long diagonal
+        # connector tails.
+        ux1, uy1, ux2, uy2 = bx1, by1, bx2, by2
+        for i in range(1, rn):
+            cx, cy, cw, ch, area = (int(v) for v in rstats[i])
+            if area < s_area(40, scale):
+                continue
+            ccx = cx + cw / 2.0
+            ccy = cy + ch / 2.0
+            close_below = (
+                bx1 - s_length(18, scale) <= ccx <= bx2 + s_length(18, scale)
+                and by1 - s_length(8, scale) <= ccy <= by2 + s_length(36, scale)
+            )
+            if close_below:
+                ux1, uy1 = min(ux1, cx), min(uy1, cy)
+                ux2, uy2 = max(ux2, cx + cw), max(uy2, cy + ch)
+                selected |= rlabels == i
+
+        text_mask = np.zeros((h, w), dtype=bool)
+        for it in ocr_text_items:
+            tx1 = max(0, int(it["x1"]) - x1)
+            ty1 = max(0, int(it["y1"]) - y1)
+            tx2 = min(w, int(it["x2"]) - x1)
+            ty2 = min(h, int(it["y2"]) - y1)
+            if tx2 > tx1 and ty2 > ty1:
+                text_mask[ty1:ty2, tx1:tx2] = True
+        near_selected = cv2.dilate(
+            selected.astype(np.uint8),
+            cv2.getStructuringElement(
+                cv2.MORPH_ELLIPSE, (recover_size, recover_size)),
+            iterations=1,
+        ).astype(bool)
+        light_glyph = (gray > 210) & (hsv[:, :, 1] < 80) & ~text_mask
+        selected |= light_glyph & near_selected
+
+        px0, py0 = parent_origin
+        lx1 = max(0, x1 - px0)
+        ly1 = max(0, y1 - py0)
+        lx2 = min(parent_mask.shape[1], x2 - px0)
+        ly2 = min(parent_mask.shape[0], y2 - py0)
+        selected &= parent_mask[ly1:ly2, lx1:lx2].astype(bool)
+
+        pad = max(1, s_length(2, scale))
+        nx1 = max(0, ux1 - pad)
+        ny1 = max(0, uy1 - pad)
+        nx2 = min(w, ux2 + pad)
+        ny2 = min(h, uy2 + pad)
+        old_area = max(1, w * h)
+        new_area = max(1, (nx2 - nx1) * (ny2 - ny1))
+        child_mask = np.zeros_like(parent_mask, dtype=bool)
+        child_mask[ly1:ly2, lx1:lx2] = selected
+        if int(child_mask.sum()) < s_area(40, scale):
+            return x1, y1, x2, y2, parent_mask
+        if new_area >= 0.92 * old_area:
+            return x1, y1, x2, y2, child_mask
+        return x1 + nx1, y1 + ny1, x1 + nx2, y1 + ny2, child_mask
 
     def _scan_line_subicons_inplace(sx1: int, sy1: int,
                                     sx2: int, sy2: int) -> None:
@@ -610,7 +1050,7 @@ def _run(args: argparse.Namespace) -> None:
         if sw * sh < line_min_area or min(sw, sh) < line_min_side:
             return
         subs, fill_jobs = detect_line_art_subicons(
-            source, sx1, sy1, sx2, sy2,
+            icon_probe, sx1, sy1, sx2, sy2,
             ocr_text_items=ocr_text_items,
             min_dim=s_length(12, scale),
             max_dim=s_length(120, scale),
@@ -620,6 +1060,26 @@ def _run(args: argparse.Namespace) -> None:
         if not subs:
             return
         for (ix1, iy1, ix2, iy2), (mask_in_crop, _color) in zip(subs, fill_jobs):
+            carried_by_container = False
+            for parent_record in foreground_records:
+                parent_box = _box4(parent_record)
+                if not _connector_on_container_border(
+                    parent_box, (ix1, iy1, ix2, iy2)
+                ):
+                    continue
+                px1, py1, px2, py2 = parent_box
+                if _foreground_role_for_box(
+                    icon_probe, px1, py1, px2, py2) == "container":
+                    carried_by_container = True
+                    break
+            if carried_by_container:
+                continue
+            source_local = icon_probe[sy1:sy2, sx1:sx2]
+            ix1, iy1, ix2, iy2, child_mask = _trim_filled_badge(
+                ix1, iy1, ix2, iy2, mask_in_crop, (sx1, sy1))
+            ok, fill = _clean_child_fill(source_local, child_mask, _color)
+            if not ok:
+                continue
             duplicate = False
             for ex1, ey1, ex2, ey2 in (
                 [_box4(r) for r in subicon_records]
@@ -640,12 +1100,12 @@ def _run(args: argparse.Namespace) -> None:
                 continue
             full_mask = np.zeros((img_h, img_w), dtype=np.uint8)
             full_mask[sy1:sy2, sx1:sx2] = (
-                mask_in_crop.astype(np.uint8) * 255
+                child_mask.astype(np.uint8) * 255
             )
             line_subicon_records.append((ix1, iy1, ix2, iy2, full_mask))
             local = cleaned[sy1:sy2, sx1:sx2]
-            inpaint_region_inplace(local, mask_in_crop, scale=scale,
-                                   fill_color=_color)
+            inpaint_region_inplace(local, child_mask, scale=scale,
+                                   fill_color=fill)
 
     def _append_outline_record(x1: int, y1: int, x2: int, y2: int,
                                outline_mask: np.ndarray) -> None:
@@ -672,7 +1132,7 @@ def _run(args: argparse.Namespace) -> None:
     if args.use_fastsam:
         for seg in fastsam_segments:
             x1, y1, x2, y2 = seg["bbox"]
-            foreground_records.append((x1, y1, x2, y2))
+            _append_foreground_record(x1, y1, x2, y2)
             foreground_to_mask[(x1, y1, x2, y2)] = seg["mask"]
     else:
         # Global contour pass first — surfaces card outlines that a single
@@ -689,6 +1149,12 @@ def _run(args: argparse.Namespace) -> None:
             outline_mask = detect_outline_mask(cleaned, x1, y1, x2, y2)
             if outline_mask is not None:
                 _append_outline_record(x1, y1, x2, y2, outline_mask)
+                # Keep every detected card/box as a whole movable object.
+                # We still run the split below so arrows/icons inside the
+                # container can become separate children, but the container
+                # itself must never exist only as fragments.
+                if not (x2 - x1 >= img_w * 0.95 and y2 - y1 >= img_h * 0.95):
+                    _append_foreground_record(x1, y1, x2, y2)
             sub = conservative_split(crop, min_gap=args.split_gap)
             if len(sub) == 1:
                 cw, ch = x2 - x1, y2 - y1
@@ -698,14 +1164,14 @@ def _run(args: argparse.Namespace) -> None:
                     # detected separately above) render on top via z-order.
                     background_records.append((x1, y1, x2, y2))
                     continue
-                foreground_records.append((x1, y1, x2, y2))
+                _append_foreground_record(x1, y1, x2, y2)
                 _scan_subicons_inplace(x1, y1, x2, y2)
                 _scan_line_subicons_inplace(x1, y1, x2, y2)
                 _scan_internal_shapes_inplace(x1, y1, x2, y2)
             else:
                 for sx1, sy1, sx2, sy2 in sub:
                     ax1, ay1, ax2, ay2 = x1 + sx1, y1 + sy1, x1 + sx2, y1 + sy2
-                    foreground_records.append((ax1, ay1, ax2, ay2))
+                    _append_foreground_record(ax1, ay1, ax2, ay2)
                     _scan_subicons_inplace(ax1, ay1, ax2, ay2)
                     _scan_line_subicons_inplace(ax1, ay1, ax2, ay2)
                     _scan_internal_shapes_inplace(ax1, ay1, ax2, ay2)
@@ -735,7 +1201,7 @@ def _run(args: argparse.Namespace) -> None:
         return False
 
     foreground_records = [
-        r for r in foreground_records if not _covered_by_shape(*r)
+        r for r in foreground_records if not _covered_by_shape(*_box4(r))
     ]
 
     def _outline_duplicated_by_full_record(ox1: int, oy1: int,
@@ -749,7 +1215,8 @@ def _run(args: argparse.Namespace) -> None:
         because it carries the panel fill/background in one object.
         """
         oarea = max(1, (ox2 - ox1) * (oy2 - oy1))
-        for fx1, fy1, fx2, fy2 in background_records + foreground_records:
+        for rec in background_records + foreground_records:
+            fx1, fy1, fx2, fy2 = _box4(rec)
             farea = max(1, (fx2 - fx1) * (fy2 - fy1))
             size_ratio = min(oarea, farea) / max(oarea, farea)
             if size_ratio < 0.80:
@@ -786,6 +1253,7 @@ def _run(args: argparse.Namespace) -> None:
     # inside" symptom). Inpainted children get re-routed to the
     # text-only sidecar — strokes intact, OCR text already erased.
     inpainted_children: set[tuple[int, int, int, int]] = set()
+    unclean_nested_children: set[tuple[int, int, int, int]] = set()
 
     def _inpaint_nested_foreground_in_parents() -> None:
         if not foreground_records:
@@ -798,8 +1266,8 @@ def _run(args: argparse.Namespace) -> None:
         child_max_side = s_length(180, scale)
         child_min_fg_pixels = s_area(20, scale)
         child_masks: list[tuple] = []
-        for child in foreground_records:
-            cx1, cy1, cx2, cy2 = child
+        for child_record in foreground_records:
+            cx1, cy1, cx2, cy2 = _box4(child_record)
             cw, ch = cx2 - cx1, cy2 - cy1
             if cw <= child_min_side or ch <= child_min_side:
                 continue
@@ -818,11 +1286,14 @@ def _run(args: argparse.Namespace) -> None:
             local_fg = (gray < 245) | (hsv[:, :, 1] > 12)
             if int(local_fg.sum()) < child_min_fg_pixels:
                 continue
-            child_masks.append((child, c_area, local_fg))
+            is_connector = _is_connector_like(crop)
+            child_masks.append(((cx1, cy1, cx2, cy2), c_area,
+                                local_fg, is_connector))
 
-        for child, c_area, local_fg in child_masks:
+        for child, c_area, local_fg, is_connector in child_masks:
             cx1, cy1, cx2, cy2 = child
-            for parent in foreground_records:
+            for parent_record in foreground_records:
+                parent = _box4(parent_record)
                 if parent == child:
                     continue
                 px1, py1, px2, py2 = parent
@@ -837,6 +1308,13 @@ def _run(args: argparse.Namespace) -> None:
                 if ox2 <= ox1 or oy2 <= oy1:
                     continue
                 if (ox2 - ox1) * (oy2 - oy1) < 0.85 * c_area:
+                    continue
+                if (
+                    is_connector
+                    and _foreground_role_for_box(
+                        cleaned, px1, py1, px2, py2) == "container"
+                    and _connector_on_container_border(parent, child)
+                ):
                     continue
                 parent_local = cleaned[py1:py2, px1:px2]
                 ph, pw = parent_local.shape[:2]
@@ -856,10 +1334,25 @@ def _run(args: argparse.Namespace) -> None:
                 sy2 = sy1 + (dy2 - dy1)
                 sx2 = sx1 + (dx2 - dx1)
                 pm[dy1:dy2, dx1:dx2] = local_fg[sy1:sy2, sx1:sx2]
-                inpaint_region_inplace(parent_local, pm, scale=scale)
-                inpainted_children.add(tuple(child))
+                clean, bg = _clean_child_fill(parent_local, pm)
+                if clean:
+                    inpaint_region_inplace(parent_local, pm, scale=scale,
+                                           fill_color=bg)
+                    inpainted_children.add(tuple(child))
+                elif not is_connector:
+                    # If we cannot cleanly remove a small nested icon from
+                    # the parent, don't expose it as a separate movable asset.
+                    # It stays baked into the parent image, matching the
+                    # "don't touch it unless it erases cleanly" policy.
+                    unclean_nested_children.add(tuple(child))
 
     _inpaint_nested_foreground_in_parents()
+    if unclean_nested_children:
+        foreground_records = [
+            r for r in foreground_records
+            if (_box4(r) not in unclean_nested_children
+                or _box4(r) in inpainted_children)
+        ]
 
     # Coverage safety net: anything visible in the original cleaned image
     # that doesn't fall under SOME inventory bbox (foreground, subicon,
@@ -872,7 +1365,7 @@ def _run(args: argparse.Namespace) -> None:
     if text_only_for_residual is not None:
         residual_mask = _foreground_mask(text_only_for_residual, args.dilate)
         all_bboxes = (
-            list(foreground_records)
+            [_box4(r) for r in foreground_records]
             + [_box4(r) for r in subicon_records]
             + [_box4(r) for r in line_subicon_records]
             + [_box4(r) for r in internal_shape_records]
@@ -894,8 +1387,8 @@ def _run(args: argparse.Namespace) -> None:
             # real element (≥18 px at 720-scale).
             if lw < residual_min_side and lh < residual_min_side:
                 continue
-            foreground_records.append((int(lx), int(ly),
-                                       int(lx + lw), int(ly + lh)))
+            _append_foreground_record(int(lx), int(ly),
+                                      int(lx + lw), int(ly + lh))
 
     # Backgrounds first (so they sort to the back via y-position tie-break),
     # then foregrounds.
@@ -933,12 +1426,15 @@ def _run(args: argparse.Namespace) -> None:
             entry["mask_path"] = str(mask_path)
         inventory.append(entry)
         visual_idx += 1
-    for x1, y1, x2, y2 in foreground_records:
+    for record in foreground_records:
+        x1, y1, x2, y2 = _box4(record)
         comp_id = f"v{visual_idx:03d}"
         # Inpainted nested children must crop from the text-only sidecar
         # (strokes intact); other foregrounds crop from cleaned where
         # shape inpainting has already removed embedded children.
         is_nested_child = (x1, y1, x2, y2) in inpainted_children
+        role_probe = source if is_nested_child else cleaned
+        role = _foreground_role_for_box(role_probe, x1, y1, x2, y2)
         entry = {
             "id": comp_id,
             "type": "image",
@@ -947,6 +1443,8 @@ def _run(args: argparse.Namespace) -> None:
                 "source" if (args.use_fastsam or is_nested_child) else "cleaned"
             ),
         }
+        if role:
+            entry["role"] = role
         # When FastSAM provided the segment, persist its mask alongside
         # the inventory so the asset cropper can alpha-key it.
         mask = foreground_to_mask.get((x1, y1, x2, y2))
@@ -985,13 +1483,19 @@ def _run(args: argparse.Namespace) -> None:
             entry["mask_path"] = str(mask_path)
         inventory.append(entry)
         visual_idx += 1
-    for x1, y1, x2, y2 in subicon_records:
+    for record in subicon_records:
+        x1, y1, x2, y2 = _box4(record)
+        role = (
+            str(record[4])
+            if len(record) >= 5 and str(record[4])
+            else "subicon"
+        )
         inventory.append({
             "id": f"v{visual_idx:03d}",
             "type": "image",
             "bbox": [x1, y1, x2, y2],
             "source": "source",
-            "role": "subicon",
+            "role": role,
         })
         visual_idx += 1
 
@@ -1003,8 +1507,11 @@ def _run(args: argparse.Namespace) -> None:
         # paints over the icon in PowerPoint.
         role_order = {
             "background": 0,
+            "container": 1,
             "outline": 2,
             "internal": 3,
+            "badge_subicon": 4,
+            "connector": 4,
             "line_subicon": 4,
             "subicon": 4,
         }
@@ -1035,14 +1542,15 @@ def _run(args: argparse.Namespace) -> None:
         for x1, y1, x2, y2, _outline_mask in outline_records:
             cv2.rectangle(vis, (x1, y1), (x2, y2), (0, 220, 220), 1)
         # Foreground (parent image) components — blue
-        for x1, y1, x2, y2 in foreground_records:
+        for record in foreground_records:
+            x1, y1, x2, y2 = _box4(record)
             cv2.rectangle(vis, (x1, y1), (x2, y2), (255, 100, 0), 1)
         # OCR-derived editable text — green
         for it in candidate_texts:
             cv2.rectangle(vis, (it["x1"], it["y1"]), (it["x2"], it["y2"]),
                           (0, 200, 0), 1)
         # Sub-icons (white-on-dark extracts) — magenta, thicker
-        for x1, y1, x2, y2 in subicon_records:
+        for x1, y1, x2, y2 in [_box4(r) for r in subicon_records]:
             cv2.rectangle(vis, (x1, y1), (x2, y2), (255, 0, 255), 2)
             cv2.putText(vis, "sub", (x1 + 1, max(10, y1 - 2)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.35, (255, 0, 255), 1,
@@ -1107,7 +1615,8 @@ def _run(args: argparse.Namespace) -> None:
 
     text_count = sum(1 for e in inventory if e["type"] == "text")
     img_count = sum(1 for e in inventory if e["type"] == "image")
-    sub_count = sum(1 for e in inventory if e.get("role") == "subicon")
+    sub_count = sum(1 for e in inventory
+                    if e.get("role") in {"subicon", "badge_subicon"})
     line_count = sum(1 for e in inventory if e.get("role") == "line_subicon")
     print(json.dumps({"text": text_count, "image": img_count,
                       "subicon": sub_count, "line_subicon": line_count,

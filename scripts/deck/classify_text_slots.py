@@ -16,6 +16,9 @@ from pathlib import Path
 from typing import Any
 
 
+MAX_STYLE_SIZE_DELTA = 2.0
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--layout", required=True, help="Combined layout JSON.")
@@ -135,11 +138,62 @@ def _style_compatible(a: dict[str, Any], b: dict[str, Any]) -> bool:
     size_b = float(b["el"].get("size") or b["el"].get("font_size") or 0)
     if size_a <= 0 or size_b <= 0:
         return False
-    if abs(size_a - size_b) > 5.0:
+    if abs(size_a - size_b) > MAX_STYLE_SIZE_DELTA:
         return False
     if max(size_a, size_b) / max(1.0, min(size_a, size_b)) > 1.75:
         return False
     return _colour_compatible(a, b)
+
+
+def _compact_latin_label(text: str) -> bool:
+    stripped = str(text or "").strip()
+    if not stripped:
+        return False
+    visible = _visible_len(stripped)
+    if visible > 16:
+        return False
+    if any(ch.isspace() for ch in stripped):
+        return False
+    if any(ch in stripped for ch in "，。！？；;,:：、/\\()（）[]{}<>《》"):
+        return False
+    latin_letters = sum(
+        1 for ch in stripped
+        if ("A" <= ch <= "Z") or ("a" <= ch <= "z")
+    )
+    return latin_letters >= 2 and latin_letters / max(1, visible) >= 0.55
+
+
+def _compact_latin_title_compatible(a: dict[str, Any],
+                                    b: dict[str, Any]) -> bool:
+    """Same-row product/framework labels may be one slot with kept sizes."""
+    if a["align"] != b["align"]:
+        return False
+    if a["colour_family"] != "blue" or b["colour_family"] != "blue":
+        return False
+    if not _colour_compatible(a, b):
+        return False
+    if not bool(a["el"].get("bold")) or not bool(b["el"].get("bold")):
+        return False
+    if _has_list_marker(a["el"]) or _has_list_marker(b["el"]):
+        return False
+    if not _compact_latin_label(str(a["el"].get("text") or "")):
+        return False
+    if not _compact_latin_label(str(b["el"].get("text") or "")):
+        return False
+    font_a = str(a["el"].get("font") or a["el"].get("font_name") or "")
+    font_b = str(b["el"].get("font") or b["el"].get("font_name") or "")
+    if font_a and font_b and font_a != font_b:
+        return False
+    size_a = float(a["el"].get("size") or a["el"].get("font_size") or 0)
+    size_b = float(b["el"].get("size") or b["el"].get("font_size") or 0)
+    if size_a < 20 or size_b < 20:
+        return False
+    if abs(size_a - size_b) <= MAX_STYLE_SIZE_DELTA:
+        return False
+    return (
+        max(size_a, size_b) / max(1.0, min(size_a, size_b)) <= 1.45
+        and abs(size_a - size_b) <= 14.0
+    )
 
 
 def _alignment_style_compatible(a: dict[str, Any],
@@ -154,7 +208,11 @@ def _alignment_style_compatible(a: dict[str, Any],
         return False
     size_a = float(a["el"].get("size") or a["el"].get("font_size") or 0)
     size_b = float(b["el"].get("size") or b["el"].get("font_size") or 0)
-    if size_a <= 0 or size_b <= 0 or abs(size_a - size_b) > 2.5:
+    if (
+        size_a <= 0
+        or size_b <= 0
+        or abs(size_a - size_b) > MAX_STYLE_SIZE_DELTA
+    ):
         return False
     families = {a["colour_family"], b["colour_family"]}
     if len(families) == 1:
@@ -209,34 +267,118 @@ def _container_siblings(a: dict[str, Any], b: dict[str, Any]) -> bool:
     return same_row or same_col
 
 
+def _sibling_relative_metrics(
+    a: dict[str, Any],
+    b: dict[str, Any],
+    containers: dict[int, dict[str, Any]],
+) -> list[tuple[tuple[float, float, float, float],
+                tuple[float, float, float, float]]]:
+    ax1, ay1, ax2, ay2 = a["box"]
+    bx1, by1, bx2, by2 = b["box"]
+    out: list[tuple[tuple[float, float, float, float],
+                    tuple[float, float, float, float]]] = []
+    for pa in a.get("ancestors") or []:
+        ca = containers.get(pa)
+        if ca is None:
+            continue
+        for pb in b.get("ancestors") or []:
+            if pa == pb:
+                continue
+            cb = containers.get(pb)
+            if cb is None or not _container_siblings(ca, cb):
+                continue
+            cax1, cay1, cax2, cay2 = ca["box"]
+            cbx1, cby1, cbx2, cby2 = cb["box"]
+            caw = max(1.0, cax2 - cax1)
+            cah = max(1.0, cay2 - cay1)
+            cbw = max(1.0, cbx2 - cbx1)
+            cbh = max(1.0, cby2 - cby1)
+            a_rel = ((ax1 - cax1) / caw, (ay1 - cay1) / cah,
+                     (ax2 - ax1) / caw, (ay2 - ay1) / cah)
+            b_rel = ((bx1 - cbx1) / cbw, (by1 - cby1) / cbh,
+                     (bx2 - bx1) / cbw, (by2 - by1) / cbh)
+            out.append((a_rel, b_rel))
+    return out
+
+
 def _same_relative_slot(a: dict[str, Any], b: dict[str, Any],
                         containers: dict[int, dict[str, Any]]) -> bool:
-    pa = a.get("direct_parent")
-    pb = b.get("direct_parent")
-    if pa is None or pb is None or pa == pb:
+    for a_rel, b_rel in _sibling_relative_metrics(a, b, containers):
+        if (
+            abs(a_rel[0] - b_rel[0]) <= 0.08
+            and abs(a_rel[1] - b_rel[1]) <= 0.10
+            and abs(a_rel[2] - b_rel[2]) <= 0.22
+            and abs(a_rel[3] - b_rel[3]) <= 0.16
+        ):
+            return True
+    return False
+
+
+def _same_relative_alert_band(a: dict[str, Any], b: dict[str, Any],
+                              containers: dict[int, dict[str, Any]]) -> bool:
+    """Match red warning/callout text across sibling cards despite wrapping."""
+    if a["colour_family"] != "red" or b["colour_family"] != "red":
         return False
-    ca = containers.get(pa)
-    cb = containers.get(pb)
-    if ca is None or cb is None or not _container_siblings(ca, cb):
+    if not bool(a["el"].get("bold")) or not bool(b["el"].get("bold")):
+        return False
+    if _has_list_marker(a["el"]) or _has_list_marker(b["el"]):
+        return False
+    if min(_visible_len(a["el"].get("text")), _visible_len(b["el"].get("text"))) < 6:
+        return False
+    for a_rel, b_rel in _sibling_relative_metrics(a, b, containers):
+        # Warning strips sit in the lower part of sibling cards. Their line
+        # widths legitimately differ when one side wraps to two lines and the
+        # other to three, so compare x/y band and height but not width.
+        if min(a_rel[1], b_rel[1]) < 0.45:
+            continue
+        if (
+            abs(a_rel[0] - b_rel[0]) <= 0.12
+            and abs(a_rel[1] - b_rel[1]) <= 0.12
+            and abs(a_rel[3] - b_rel[3]) <= 0.12
+        ):
+            return True
+    return False
+
+
+def _same_vertical_list_slot(
+    a: dict[str, Any],
+    b: dict[str, Any],
+    containers: dict[int, dict[str, Any]],
+    scope: int | None,
+    same_parent: bool,
+) -> bool:
+    """Match stacked TOC/section-list items whose text widths vary widely."""
+    if a["align"] != "left" or b["align"] != "left":
+        return False
+    if a["colour_family"] != "blue" or b["colour_family"] != "blue":
+        return False
+    if not bool(a["el"].get("bold")) or not bool(b["el"].get("bold")):
+        return False
+    if _has_list_marker(a["el"]) or _has_list_marker(b["el"]):
+        return False
+    visible_a = _visible_len(str(a["el"].get("text") or ""))
+    visible_b = _visible_len(str(b["el"].get("text") or ""))
+    if min(visible_a, visible_b) < 2 or max(visible_a, visible_b) > 48:
+        return False
+    if not (
+        same_parent
+        or scope is not None
+        or _sibling_relative_metrics(a, b, containers)
+    ):
         return False
     ax1, ay1, ax2, ay2 = a["box"]
     bx1, by1, bx2, by2 = b["box"]
-    cax1, cay1, cax2, cay2 = ca["box"]
-    cbx1, cby1, cbx2, cby2 = cb["box"]
-    caw = max(1.0, cax2 - cax1)
-    cah = max(1.0, cay2 - cay1)
-    cbw = max(1.0, cbx2 - cbx1)
-    cbh = max(1.0, cby2 - cby1)
-    a_rel = ((ax1 - cax1) / caw, (ay1 - cay1) / cah,
-             (ax2 - ax1) / caw, (ay2 - ay1) / cah)
-    b_rel = ((bx1 - cbx1) / cbw, (by1 - cby1) / cbh,
-             (bx2 - bx1) / cbw, (by2 - by1) / cbh)
-    return (
-        abs(a_rel[0] - b_rel[0]) <= 0.08
-        and abs(a_rel[1] - b_rel[1]) <= 0.10
-        and abs(a_rel[2] - b_rel[2]) <= 0.22
-        and abs(a_rel[3] - b_rel[3]) <= 0.16
-    )
+    ah = max(1.0, ay2 - ay1)
+    bh = max(1.0, by2 - by1)
+    if ay1 <= by1:
+        y_gap = by1 - ay2
+    else:
+        y_gap = ay1 - by2
+    if y_gap < -min(ah, bh) * 0.12:
+        return False
+    if y_gap > max(86.0, _median_float([ah, bh]) * 1.85):
+        return False
+    return abs(ax1 - bx1) <= 26.0
 
 
 def _common_scope(a: dict[str, Any], b: dict[str, Any],
@@ -271,6 +413,75 @@ def _median_float(values: list[float]) -> float:
 
 def _visible_len(text: str) -> int:
     return sum(1 for ch in str(text or "") if not ch.isspace())
+
+
+def _has_list_marker(el: dict[str, Any]) -> bool:
+    name = str(el.get("name") or "")
+    role = str(el.get("role") or "")
+    return (
+        bool(el.get("ignored_marker_image"))
+        or "bullet_marker" in name
+        or role in {"bullet_marker", "inferred_bullet_marker"}
+    )
+
+
+def _short_centered_stack_text(text: str) -> bool:
+    stripped = str(text or "").strip()
+    if not stripped:
+        return False
+    if _visible_len(stripped) > 14:
+        return False
+    # Sentence/list bodies with colon/comma punctuation should keep their
+    # measured left indent. Compact labels may still contain 、 / + - ().
+    if any(ch in stripped for ch in "，。！？；;,:："):
+        return False
+    return True
+
+
+def _compact_center_stack_candidate(
+    a: dict[str, Any],
+    b: dict[str, Any],
+) -> bool:
+    if _has_list_marker(a["el"]) or _has_list_marker(b["el"]):
+        return False
+    if not _short_centered_stack_text(str(a["el"].get("text") or "")):
+        return False
+    if not _short_centered_stack_text(str(b["el"].get("text") or "")):
+        return False
+    ax1, ay1, ax2, ay2 = a["box"]
+    bx1, by1, bx2, by2 = b["box"]
+    aw = max(1.0, ax2 - ax1)
+    bw = max(1.0, bx2 - bx1)
+    ah = max(1.0, ay2 - ay1)
+    bh = max(1.0, by2 - by1)
+    acy = (ay1 + ay2) / 2.0
+    bcy = (by1 + by2) / 2.0
+    center_y_gap = abs(acy - bcy)
+    if center_y_gap < max(8.0, min(ah, bh) * 0.42):
+        return False
+    if center_y_gap > max(38.0, _median_float([ah, bh]) * 1.85):
+        return False
+    overlap = max(0.0, min(ax2, bx2) - max(ax1, bx1))
+    if overlap / min(aw, bw) < 0.55:
+        return False
+    center_gap = abs((ax1 + ax2) / 2.0 - (bx1 + bx2) / 2.0)
+    if center_gap <= 1.0:
+        return False
+    return center_gap <= max(24.0, min(aw, bw) * 0.42)
+
+
+def _reference_center_for_stack(
+    items: list[dict[str, Any]],
+) -> float:
+    best = max(
+        items,
+        key=lambda item: (
+            _element_size_reliability(item["el"]),
+            _visible_len(str(item["el"].get("text") or "")),
+        ),
+    )
+    x1, _y1, x2, _y2 = best["box"]
+    return (x1 + x2) / 2.0
 
 
 def _element_size_reliability(el: dict[str, Any]) -> float:
@@ -409,6 +620,214 @@ def _apply_parent_column_alignment(
     return adjustments
 
 
+def _table_column_text_candidate(text: dict[str, Any]) -> bool:
+    """Whether a text box is small enough to behave like a table cell label."""
+    el = text["el"]
+    if text["align"] != "left" or _has_list_marker(el):
+        return False
+    if text.get("colour_family") == "white":
+        return False
+    box = el.get("box")
+    if not box or len(box) != 4:
+        return False
+    value = str(el.get("text") or "").strip()
+    if not value:
+        return False
+    visible = _visible_len(value)
+    if visible == 0 or visible > 14:
+        return False
+    if any(ch in value for ch in "，。！？；;,:："):
+        return False
+    width = float(box[2])
+    height = float(box[3])
+    if width <= 0 or height <= 0 or width > 180 or height > 44:
+        return False
+    return True
+
+
+def _scope_is_table_like(
+    scope_items: list[dict[str, Any]],
+    min_rows: int = 3,
+) -> bool:
+    if len(scope_items) < 6:
+        return False
+    rows: list[float] = []
+    xs: list[float] = []
+    for item in sorted(
+        scope_items,
+        key=lambda text: (
+            float(text["el"]["box"][1]) + float(text["el"]["box"][3]) / 2.0
+        ),
+    ):
+        box = item["el"].get("box")
+        if not box or len(box) != 4:
+            continue
+        cy = float(box[1]) + float(box[3]) / 2.0
+        if not rows or abs(cy - rows[-1]) > 10.0:
+            rows.append(cy)
+        else:
+            rows[-1] = (rows[-1] + cy) / 2.0
+        xs.append(float(box[0]))
+    if len(rows) < min_rows or len(xs) < 6:
+        return False
+    return max(xs) - min(xs) >= 90.0
+
+
+def _cluster_numeric(values: list[float], threshold: float) -> list[list[float]]:
+    if not values:
+        return []
+    ordered = sorted(float(v) for v in values)
+    clusters: list[list[float]] = [[ordered[0]]]
+    for value in ordered[1:]:
+        if value - clusters[-1][-1] <= threshold:
+            clusters[-1].append(value)
+        else:
+            clusters.append([value])
+    return clusters
+
+
+def _table_column_target_x(items: list[dict[str, Any]]) -> float | None:
+    xs = [float(item["el"]["box"][0]) for item in items]
+    if not xs:
+        return None
+    tight_clusters = _cluster_numeric(xs, 7.0)
+    max_count = max(len(cluster) for cluster in tight_clusters)
+    # A left-shifted icon/OCR remnant often forms a small secondary cluster.
+    # Use the dominant modal x; if two modes are almost equally strong,
+    # prefer the rightmost one because the failure mode we are correcting is
+    # usually a label box starting on the preceding icon.
+    contenders = [
+        cluster for cluster in tight_clusters
+        if len(cluster) >= max(2, max_count - 1)
+    ]
+    if not contenders:
+        return None
+    best = max(
+        contenders,
+        key=lambda cluster: (len(cluster), _median_float(cluster)),
+    )
+    return round(_median_float(best), 3)
+
+
+def _apply_table_column_geometry_alignment(
+    texts: list[dict[str, Any]],
+    containers: dict[int, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Align short vertical table-cell label columns across visual styles.
+
+    This pass is intentionally geometry-first. Unlike style classes, it may
+    group red/blue/gray/black variants when they sit in the same table-like
+    scope and form a repeated left-x stack. It only changes x, never y,
+    size, boldness, or paragraph alignment.
+    """
+    by_scope: dict[int, list[dict[str, Any]]] = {}
+    all_scope_items: dict[int, list[dict[str, Any]]] = {}
+    for text in texts:
+        scopes = text.get("scope_ancestors") or []
+        if not scopes:
+            continue
+        for raw_scope in scopes:
+            scope = int(raw_scope)
+            all_scope_items.setdefault(scope, []).append(text)
+            if _table_column_text_candidate(text):
+                by_scope.setdefault(scope, []).append(text)
+
+    adjustments: list[dict[str, Any]] = []
+    aligned_text_ids: set[int] = set()
+    for scope, candidates in sorted(
+        by_scope.items(),
+        key=lambda pair: containers.get(pair[0], {}).get("area", 0.0),
+    ):
+        candidates = [
+            item for item in candidates
+            if int(item["id"]) not in aligned_text_ids
+        ]
+        if len(candidates) < 3:
+            continue
+        if not _scope_is_table_like(all_scope_items.get(scope, [])):
+            continue
+        ordered = sorted(candidates, key=lambda item: float(item["el"]["box"][0]))
+        columns: list[list[dict[str, Any]]] = []
+        for item in ordered:
+            x = float(item["el"]["box"][0])
+            if not columns:
+                columns.append([item])
+                continue
+            prev_xs = [float(prev["el"]["box"][0]) for prev in columns[-1]]
+            if abs(x - _median_float(prev_xs)) <= 34.0:
+                columns[-1].append(item)
+            else:
+                columns.append([item])
+
+        for column in columns:
+            if len(column) < 3:
+                continue
+            centers_y = [
+                float(item["el"]["box"][1]) + float(item["el"]["box"][3]) / 2.0
+                for item in column
+            ]
+            heights = [
+                max(1.0, float(item["el"]["box"][3]))
+                for item in column
+            ]
+            if max(centers_y) - min(centers_y) <= _median_float(heights) * 1.6:
+                continue
+            row_clusters = _cluster_numeric(
+                centers_y,
+                max(8.0, _median_float(heights) * 0.45),
+            )
+            if len(row_clusters) < 3:
+                continue
+            xs = [float(item["el"]["box"][0]) for item in column]
+            if max(xs) - min(xs) > 34.0:
+                continue
+            widths = [
+                max(1.0, float(item["el"]["box"][2]))
+                for item in column
+            ]
+            if max(widths) / min(widths) > 1.75:
+                continue
+            target_x = _table_column_target_x(column)
+            if target_x is None:
+                continue
+            moved: list[dict[str, Any]] = []
+            for item in column:
+                el = item["el"]
+                box = el.get("box")
+                if not box or len(box) != 4:
+                    continue
+                old_x = float(box[0])
+                if abs(old_x - target_x) > 34.0:
+                    continue
+                if abs(old_x - target_x) < 0.15:
+                    continue
+                box[0] = target_x
+                el["style_table_column_x"] = {
+                    "axis": "left",
+                    "target": target_x,
+                    "scope": containers.get(scope, {}).get("name"),
+                }
+                _sync_text_box(item)
+                moved.append({
+                    "name": el.get("name"),
+                    "text": el.get("text"),
+                    "old_x": round(old_x, 3),
+                    "new_x": target_x,
+                })
+            if moved:
+                aligned_text_ids.update(int(item["id"]) for item in column)
+                scope_container = containers.get(scope)
+                adjustments.append({
+                    "scope_id": scope,
+                    "scope_name": (
+                        scope_container.get("name") if scope_container else None
+                    ),
+                    "target_x": target_x,
+                    "members": moved,
+                })
+    return adjustments
+
+
 def _run_role(run: dict[str, Any], idx: int) -> str:
     text = str(run.get("text") or "").strip()
     if text.startswith(("（", "(")) and text.endswith(("）", ")")):
@@ -473,7 +892,7 @@ def _run_slot_classes(texts: list[dict[str, Any]],
         # Structural classes are high-priority once they are formed. Keep the
         # guardrails local to a role: we only normalize runs that already have
         # close sizes inside the same structural slot.
-        role_limit = 2.5 if role == "main" else 2.0
+        role_limit = MAX_STYLE_SIZE_DELTA
         can_apply_role = role == "bracket" or (
             role == "main"
             and (force_apply or len(entries) >= min_apply_size)
@@ -896,7 +1315,58 @@ def _apply_class_position_priors(
                 "members": moved,
             })
 
-    if not x_moved and not row_adjustments:
+    column_stack_adjustments: list[dict[str, Any]] = []
+    by_parent: dict[int, list[dict[str, Any]]] = {}
+    for item in items:
+        parent = item.get("direct_parent")
+        if parent is None:
+            continue
+        by_parent.setdefault(int(parent), []).append(item)
+    for parent, group in by_parent.items():
+        if len(group) != 2:
+            continue
+        pair = sorted(
+            group,
+            key=lambda item: (
+                float(item["el"]["box"][1]) + float(item["el"]["box"][3]) / 2.0,
+                float(item["el"]["box"][0]),
+            ),
+        )
+        if not _compact_center_stack_candidate(pair[0], pair[1]):
+            continue
+        target_center = round(_reference_center_for_stack(pair), 3)
+        moved: list[dict[str, Any]] = []
+        for item in pair:
+            el = item["el"]
+            box = el.get("box")
+            if not box or len(box) != 4:
+                continue
+            old_x = float(box[0])
+            new_x = round(target_center - float(box[2]) / 2.0, 3)
+            if abs(old_x - new_x) < 0.15:
+                continue
+            box[0] = new_x
+            el["style_class_position_x"] = {
+                "axis": "center",
+                "target": target_center,
+                "scope": "compact_stack",
+            }
+            _sync_text_box(item)
+            moved.append({
+                "name": el.get("name"),
+                "text": el.get("text"),
+                "old_x": round(old_x, 3),
+                "new_x": new_x,
+            })
+        if moved:
+            column_stack_adjustments.append({
+                "direct_parent_id": parent,
+                "axis": "center",
+                "target": target_center,
+                "members": moved,
+            })
+
+    if not x_moved and not row_adjustments and not column_stack_adjustments:
         return None
     return {
         "class_id": class_id,
@@ -910,6 +1380,7 @@ def _apply_class_position_priors(
             if x_moved else None
         ),
         "row_alignment": row_adjustments,
+        "column_stack_alignment": column_stack_adjustments,
     }
 
 
@@ -931,12 +1402,32 @@ def _high_confidence_pair(
         return False
     size_a = float(a["el"].get("size") or a["el"].get("font_size") or 0)
     size_b = float(b["el"].get("size") or b["el"].get("font_size") or 0)
-    if size_a <= 0 or size_b <= 0 or abs(size_a - size_b) > 2.5:
+    if (
+        size_a <= 0
+        or size_b <= 0
+        or abs(size_a - size_b) > MAX_STYLE_SIZE_DELTA
+    ):
         return False
     if a.get("direct_parent") is None or a.get("direct_parent") != b.get("direct_parent"):
         return False
     reasons = edge_reasons.get((min(i, j), max(i, j)), [])
     return "column" in reasons and "same_parent" in reasons
+
+
+def _size_exception_slot(
+    members: list[int],
+    edge_reasons: dict[tuple[int, int], list[str]],
+) -> bool:
+    """Allow structural classes whose role matches but sizes should stay."""
+    if len(members) < 2:
+        return False
+    covered: set[int] = set()
+    for pos, i in enumerate(members):
+        for j in members[pos + 1:]:
+            reasons = edge_reasons.get((min(i, j), max(i, j)), [])
+            if "compact_latin_title" in reasons:
+                covered.update((i, j))
+    return len(covered) == len(members)
 
 
 def _clear_style_annotations(slide: dict[str, Any]) -> None:
@@ -955,6 +1446,7 @@ def _clear_style_annotations(slide: dict[str, Any]) -> None:
             "style_parent_column_align",
             "style_class_position_x",
             "style_class_position_y",
+            "style_table_column_x",
         ):
             el.pop(key, None)
         for run in el.get("runs") or []:
@@ -1053,15 +1545,28 @@ def classify_slide(slide: dict[str, Any],
     for i, a in enumerate(texts):
         for j in range(i + 1, len(texts)):
             b = texts[j]
-            if not _style_compatible(a, b):
+            style_ok = _style_compatible(a, b)
+            compact_latin_title = False
+            if not style_ok:
+                compact_latin_title = _compact_latin_title_compatible(a, b)
+            if not style_ok and not compact_latin_title:
                 continue
             scope = _common_scope(a, b, containers)
             rel_slot = _same_relative_slot(a, b, containers)
+            rel_alert = _same_relative_alert_band(a, b, containers)
             same_parent = (
                 a.get("direct_parent") is not None
                 and a.get("direct_parent") == b.get("direct_parent")
             )
-            if scope is None and not rel_slot and not same_parent:
+            vertical_list = _same_vertical_list_slot(
+                a, b, containers, scope, same_parent)
+            if (
+                scope is None
+                and not rel_slot
+                and not rel_alert
+                and not vertical_list
+                and not same_parent
+            ):
                 continue
             reasons: list[str] = []
             if _row_aligned(a, b):
@@ -1070,6 +1575,12 @@ def classify_slide(slide: dict[str, Any],
                 reasons.append("column")
             if rel_slot:
                 reasons.append("relative_slot")
+            if rel_alert:
+                reasons.append("relative_alert_band")
+            if vertical_list:
+                reasons.append("vertical_list_slot")
+            if compact_latin_title:
+                reasons.append("compact_latin_title")
             if not reasons:
                 continue
             if scope is not None:
@@ -1092,7 +1603,10 @@ def classify_slide(slide: dict[str, Any],
                   or texts[i]["el"].get("font_size") or 0)
             for i in members
         ]
-        if max(sizes) - min(sizes) > 5.0:
+        class_size_delta = max(sizes) - min(sizes)
+        size_unification_eligible = class_size_delta <= MAX_STYLE_SIZE_DELTA
+        size_exception = _size_exception_slot(members, edge_reasons)
+        if not size_unification_eligible and not size_exception:
             continue
         class_id = f"slot_{len(classes) + 1:02d}"
         align_values = [texts[i]["align"] for i in members]
@@ -1110,33 +1624,37 @@ def classify_slide(slide: dict[str, Any],
             class_bolds.count(dominant_bold) >= max(3, len(members) - 1)
         )
         force_apply = _high_confidence_pair(texts, members, edge_reasons)
-        suggested_size = _suggested_class_size(
-            sizes, force_apply, [texts[i]["el"] for i in members])
+        suggested_size = (
+            _suggested_class_size(
+                sizes, force_apply, [texts[i]["el"] for i in members])
+            if size_unification_eligible else None
+        )
         applied_size = False
         applied_bold = False
         if apply:
             for i in members:
                 el = texts[i]["el"]
                 el["style_class"] = class_id
-                el["style_class_suggested_size"] = suggested_size
+                if suggested_size is not None:
+                    el["style_class_suggested_size"] = suggested_size
                 el["style_class_align"] = align
                 el["style_class_colour_family"] = texts[i]["colour_family"]
                 el["align"] = align
             # Text-level size priors are only safe for classes without
             # explicit mixed run sizes. Mixed title+annotation text is
             # handled by run_slot_classes below.
-            deltas = [abs(float(size) - suggested_size) for size in sizes]
-            max_delta = max(deltas)
-            near_count = sum(1 for delta in deltas if delta <= 1.0)
+            deltas = (
+                [abs(float(size) - suggested_size) for size in sizes]
+                if suggested_size is not None else []
+            )
+            max_delta = max(deltas) if deltas else class_size_delta
             stable_or_outlier = (
-                max_delta <= 3.0
-                or (
-                    max_delta <= 5.0
-                    and near_count >= max(3, len(members) - 1)
-                )
+                size_unification_eligible
+                and max_delta <= MAX_STYLE_SIZE_DELTA
             )
             if (
                 (force_apply or len(members) >= min_apply_size)
+                and suggested_size is not None
                 and suggested_size > 0
                 and stable_or_outlier
                 and not has_explicit_mixed_runs
@@ -1179,6 +1697,9 @@ def classify_slide(slide: dict[str, Any],
             "bold": bool(texts[members[0]]["el"].get("bold")),
             "align": align,
             "colour_family": texts[members[0]]["colour_family"],
+            "size_delta": round(class_size_delta, 3),
+            "size_unification_eligible": size_unification_eligible,
+            "size_exception": size_exception,
             "applied_text_size": applied_size,
             "applied_text_bold": applied_bold,
             "force_applied": force_apply,
@@ -1218,6 +1739,11 @@ def classify_slide(slide: dict[str, Any],
             ],
         })
 
+    table_column_alignment = (
+        _apply_table_column_geometry_alignment(texts, containers)
+        if apply else []
+    )
+
     classes.sort(key=lambda c: (
         min(float(m["box"][1]) for m in c["members"] if m.get("box")),
         min(float(m["box"][0]) for m in c["members"] if m.get("box")),
@@ -1245,6 +1771,7 @@ def classify_slide(slide: dict[str, Any],
         "container_count": len(containers),
         "container_groups": container_groups,
         "parent_column_alignment": parent_column_alignment,
+        "table_column_alignment": table_column_alignment,
         "classes": classes,
         "unclassified_texts": [
             {

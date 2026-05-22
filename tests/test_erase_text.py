@@ -14,10 +14,12 @@ for path in (SCRIPTS_DIR, PAGE_DIR):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
-from erase_text import erase_text  # noqa: E402
+from erase_text import erase_text, fill_color  # noqa: E402
+from _heuristics import is_likely_icon  # noqa: E402
 
 
 BLUE = np.array([152, 71, 5], dtype=np.uint8)
+LIGHT_BLUE = np.array([253, 230, 208], dtype=np.uint8)
 WHITE = np.array([255, 255, 255], dtype=np.uint8)
 
 
@@ -50,6 +52,39 @@ def _line_preserved(before: np.ndarray, after: np.ndarray) -> float:
 
 
 class EraseTextBoundaryTests(unittest.TestCase):
+    def test_fill_color_keeps_tinted_pill_behind_dense_dark_text(self) -> None:
+        img = np.zeros((80, 260, 3), dtype=np.uint8)
+        img[:] = WHITE
+        cv2.rectangle(img, (30, 25), (230, 60),
+                      tuple(int(v) for v in LIGHT_BLUE), -1)
+        # One connected, saturated "dense glyph" mass. It covers most of
+        # the OCR bbox but does not behave like a container fill because it
+        # does not reach enough bbox edges.
+        cv2.rectangle(img, (70, 39), (190, 54),
+                      tuple(int(v) for v in BLUE), -1)
+
+        bg = fill_color(img, 60, 32, 200, 56)
+
+        self.assertLessEqual(
+            int(np.max(np.abs(bg.astype(np.int16)
+                              - LIGHT_BLUE.astype(np.int16)))),
+            5,
+        )
+
+    def test_fill_color_still_detects_tight_colored_container(self) -> None:
+        img = np.zeros((80, 220, 3), dtype=np.uint8)
+        img[:] = WHITE
+        cv2.rectangle(img, (50, 24), (170, 56),
+                      tuple(int(v) for v in BLUE), -1)
+
+        bg = fill_color(img, 50, 24, 170, 56)
+
+        self.assertLessEqual(
+            int(np.max(np.abs(bg.astype(np.int16)
+                              - BLUE.astype(np.int16)))),
+            5,
+        )
+
     def test_word_boxes_prevent_same_colour_dash_from_being_erased(self) -> None:
         img = _slide_with_text_and_dash()
         item = {
@@ -125,6 +160,46 @@ class EraseTextBoundaryTests(unittest.TestCase):
         after = np.abs(cleaned[8:46, 18:100].astype(np.int16)
                        - WHITE.astype(np.int16)).max(axis=2) > 30
         self.assertLess(int(after.sum()), int(before.sum()) * 0.08)
+
+    def test_short_text_word_boxes_keep_edge_glyphs_erasable(self) -> None:
+        img = np.zeros((80, 170, 3), dtype=np.uint8)
+        img[:] = WHITE
+        red = np.array([55, 55, 205], dtype=np.uint8)
+        cv2.rectangle(img, (18, 25), (40, 53), tuple(int(v) for v in red), -1)
+        cv2.rectangle(img, (54, 28), (65, 52), tuple(int(v) for v in red), -1)
+        cv2.rectangle(img, (70, 27), (84, 53), tuple(int(v) for v in red), 3)
+        cv2.rectangle(img, (98, 25), (120, 53), tuple(int(v) for v in red), -1)
+        item = {
+            "text": "前10名",
+            "x1": 16, "y1": 23, "x2": 122, "y2": 55,
+            "confidence": 0.99,
+            "words": ["前", "10", "名"],
+            "word_boxes": [[18, 25, 40, 53], [54, 25, 84, 53],
+                           [98, 25, 120, 53]],
+            "_force_text": True,
+        }
+
+        cleaned, _mask, _decisions = erase_text(img, [item])
+
+        before = np.abs(img[20:58, 12:126].astype(np.int16)
+                        - WHITE.astype(np.int16)).max(axis=2) > 30
+        after = np.abs(cleaned[20:58, 12:126].astype(np.int16)
+                       - WHITE.astype(np.int16)).max(axis=2) > 30
+        self.assertLess(int(after.sum()), int(before.sum()) * 0.08)
+
+    def test_repeated_decorative_symbols_are_preserved_as_icon(self) -> None:
+        img = np.zeros((80, 180, 3), dtype=np.uint8)
+        img[:] = WHITE
+        item = {
+            "text": "★★★",
+            "x1": 40, "y1": 20, "x2": 100, "y2": 44,
+            "confidence": 0.99,
+        }
+
+        is_icon, reason = is_likely_icon(item, [item], img)
+
+        self.assertTrue(is_icon)
+        self.assertEqual(reason, "decorative_symbol")
 
 
 if __name__ == "__main__":

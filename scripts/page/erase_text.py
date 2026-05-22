@@ -395,6 +395,21 @@ def fill_color(img: np.ndarray, x1: int, y1: int, x2: int, y2: int) -> np.ndarra
             if largest_area < 0.55 * total_sat:
                 is_container_like = False
     if is_container_like:
+        # A single dense CJK/Latin stroke run can still pass the topology
+        # guard when adjacent glyphs touch. Real container fill reaches the
+        # text bbox edges; glyph strokes leave at least some edge bands
+        # mostly background. Require saturated coverage on 3+ bbox sides
+        # before overriding the side-ring colour.
+        band = max(1, min(inner.shape[:2]) // 6)
+        edge_coverages = (
+            float(saturated_mask[:band, :].mean()),
+            float(saturated_mask[-band:, :].mean()),
+            float(saturated_mask[:, :band].mean()),
+            float(saturated_mask[:, -band:].mean()),
+        )
+        if sum(v >= 0.60 for v in edge_coverages) < 3:
+            is_container_like = False
+    if is_container_like:
         sat_pixels = inner[saturated_mask]
         container = np.median(sat_pixels, axis=0).astype(np.uint8)
         # Only override the ring colour when the container is clearly
@@ -645,6 +660,7 @@ def erase_text(
             continue
         bg = fill_color(img, ox1, oy1, ox2, oy2).astype(float)
         region = img[y1:y2, x1:x2]
+        guard_box_count = len(_ocr_guard_boxes(item))
         guard = _text_geometry_guard_mask(item, x1, y1, x2, y2, scale)
         diff_bg = np.abs(region.astype(int) - bg.astype(int)).max(axis=2)
         non_bg = diff_bg > 30
@@ -739,7 +755,7 @@ def erase_text(
             stroke = (stroke.astype(bool) & guard).astype(np.uint8)
         else:
             stroke = _drop_thin_non_text_row_bands(stroke, item_text)
-        if is_short_text:
+        if is_short_text and not (has_guard and guard_box_count >= 2):
             stroke_before_filter = stroke.copy()
             stroke, review_records = _filter_short_text_stroke_components(
                 stroke, item_text)

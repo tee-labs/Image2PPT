@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import cv2
 import numpy as np
+import unicodedata
 
 
 # =============================================================================
@@ -101,6 +102,24 @@ def _looks_like_decorative_binary(text: str, cw: int, ch: int) -> bool:
     if any(c not in "01" for c in compact):
         return False
     return ch <= 30 and cw <= 130
+
+
+def _looks_like_decorative_symbol(text: str, cw: int, ch: int) -> bool:
+    """Repeated symbol-only OCR is usually decoration, not editable text.
+
+    Examples include star ratings or repeated pictogram marks. Keep the
+    rule deliberately narrow: there must be no letters/digits/CJK text,
+    every visible character must be a non-math symbol, and the sequence
+    must repeat the same symbol.
+    """
+    compact = "".join(c for c in text if not c.isspace())
+    if len(compact) < 2:
+        return False
+    if len(set(compact)) != 1:
+        return False
+    if any(c.isalnum() or "一" <= c <= "鿿" for c in compact):
+        return False
+    return all(unicodedata.category(c) == "So" for c in compact)
 
 
 # =============================================================================
@@ -368,6 +387,8 @@ def is_likely_icon(item: dict, all_items: list[dict],
     scale = pixel_scale(img)
     if _looks_like_decorative_binary(text, cw, ch):
         return True, "decorative_binary"
+    if _looks_like_decorative_symbol(text, cw, ch):
+        return True, "decorative_symbol"
     # Low confidence short text
     if len(text) <= 2 and conf < 0.6:
         return True, "low_conf_short_text"
@@ -463,4 +484,8 @@ def is_likely_icon(item: dict, all_items: list[dict],
 # instruction from the OCR review stream; `decorative_binary` is a
 # narrowly scoped icon-internal pattern. Every other reason is routed into
 # the review packet.
-DEFINITIVE_ICON_REASONS = {"preserve_visual", "decorative_binary"}
+DEFINITIVE_ICON_REASONS = {
+    "preserve_visual",
+    "decorative_binary",
+    "decorative_symbol",
+}

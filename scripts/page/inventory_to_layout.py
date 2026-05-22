@@ -294,7 +294,7 @@ def _classify_text_color(r: int, g: int, b: int, bg: np.ndarray) -> str:
     # Canonical deck blue. Require a real blue-vs-gray separation; low
     # saturation grey-blue body text such as #7A8191 should remain grey
     # instead of being snapped to the saturated title blue.
-    if b > r + 28 and b > g + 18 and b > 100:
+    if b > r + 28 and b > g + 18 and b > 80:
         return "#054798"
     if r < 80 and g < 80 and b < 80:
         return "#222222"
@@ -315,6 +315,13 @@ def _classify_text_color(r: int, g: int, b: int, bg: np.ndarray) -> str:
     if max_ch < 130 and (max_ch - min_ch) < 12:
         return "#222222"
     return f"#{r:02X}{g:02X}{b:02X}"
+
+
+def _sampled_color_hex(pixels: np.ndarray, bg: np.ndarray) -> str:
+    """Return a canonical RGB hex colour from sampled BGR stroke pixels."""
+    m = np.median(pixels, axis=0).astype(int)
+    b, g, r = int(m[0]), int(m[1]), int(m[2])
+    return _classify_text_color(r, g, b, bg)
 
 
 def _per_char_runs(bbox: list[int], text: str, orig_img: np.ndarray,
@@ -430,8 +437,7 @@ def _per_char_runs(bbox: list[int], text: str, orig_img: np.ndarray,
                 mask = diff > 35
                 if int(mask.sum()) >= 3:
                     # Colour: median of strokes, snapped to dominant if close.
-                    m = np.median(sub[mask], axis=0).astype(int)
-                    raw = f"#{int(m[2]):02X}{int(m[1]):02X}{int(m[0]):02X}"
+                    raw = _sampled_color_hex(sub[mask], bg)
                     col = (fallback_color
                            if _color_close(raw, fallback_color, tol=60)
                            else raw)
@@ -520,8 +526,7 @@ def _per_char_runs(bbox: list[int], text: str, orig_img: np.ndarray,
                 char_colors.append((c, None))
                 continue
             pixels = sub[mask]
-            m = np.median(pixels, axis=0).astype(int)
-            col = f"#{int(m[2]):02X}{int(m[1]):02X}{int(m[0]):02X}"
+            col = _sampled_color_hex(pixels, bg)
             char_colors.append((c, col))
     else:
         # Mode B: proportional width estimation
@@ -564,8 +569,7 @@ def _per_char_runs(bbox: list[int], text: str, orig_img: np.ndarray,
                 char_colors.append((c, None))
                 continue
             pixels = sub[mask]
-            m = np.median(pixels, axis=0).astype(int)
-            col = f"#{int(m[2]):02X}{int(m[1]):02X}{int(m[0]):02X}"
+            col = _sampled_color_hex(pixels, bg)
             char_colors.append((c, col))
 
     # Anchor on the line-level dominant color: any per-char sample close
@@ -851,6 +855,7 @@ def detect_text_style(bbox: list[int], orig_img: np.ndarray,
         runs = _per_char_runs(bbox, text, orig_img, bg, raw_line_hex,
                               char_boxes=char_boxes,
                               words=words, word_boxes=word_boxes)
+        _normalize_run_colors(runs, color, bg)
         if len(runs) > 1:
             result["runs"] = runs
     return result
@@ -1091,6 +1096,27 @@ def _color_close(c1: str, c2: str, tol: int = 25) -> bool:
     r1, g1, b1 = _hex_to_rgb(c1)
     r2, g2, b2 = _hex_to_rgb(c2)
     return abs(r1 - r2) <= tol and abs(g1 - g2) <= tol and abs(b1 - b2) <= tol
+
+
+def _normalize_run_colors(runs: list[dict], fallback_color: str,
+                          bg: np.ndarray) -> None:
+    """Snap anti-aliased run samples back to the line-level colour."""
+    if not runs:
+        return
+    for run in runs:
+        raw = run.get("color")
+        if not isinstance(raw, str) or not raw.startswith("#"):
+            run["color"] = fallback_color
+            continue
+        try:
+            rr, gg, bb = _hex_to_rgb(raw)
+        except (TypeError, ValueError):
+            run["color"] = fallback_color
+            continue
+        classified = _classify_text_color(rr, gg, bb, bg)
+        if classified == fallback_color or _color_close(
+                raw, fallback_color, tol=70):
+            run["color"] = fallback_color
 
 
 def _is_stat_value(text: str) -> bool:
@@ -1349,7 +1375,8 @@ def _build_runs_from_char_sizes(text: str, colors: list[str],
     cur_color: str | None = None
     cur_size: int | None = None
     cur_bold: bool | None = None
-    if bolds is None or len(bolds) != len(text):
+    preserve_bold = bolds is not None and len(bolds) == len(text)
+    if not preserve_bold:
         bolds = [False] * len(text)
     for c, color, size, is_bold in zip(text, colors, sizes, bolds):
         if (cur_text and color == cur_color and size == cur_size
@@ -1360,8 +1387,8 @@ def _build_runs_from_char_sizes(text: str, colors: list[str],
             run = {"text": cur_text,
                    "color": cur_color,
                    "size": int(cur_size)}
-            if cur_bold:
-                run["bold"] = True
+            if preserve_bold or cur_bold:
+                run["bold"] = bool(cur_bold)
             runs.append(run)
         cur_text = c
         cur_color = color
@@ -1371,10 +1398,48 @@ def _build_runs_from_char_sizes(text: str, colors: list[str],
         run = {"text": cur_text,
                "color": cur_color,
                "size": int(cur_size)}
-        if cur_bold:
-            run["bold"] = True
+        if preserve_bold or cur_bold:
+            run["bold"] = bool(cur_bold)
         runs.append(run)
     return runs
+
+
+def _label_prefix_split_index(text: str, runs: list[dict] | None,
+                              fallback_color: str) -> int | None:
+    """Find `coloured label:` + body split points in mixed-colour lines."""
+    colon_positions = [i for i, ch in enumerate(text) if ch in "：:"]
+    if not colon_positions:
+        return None
+    colors = _char_colors_from_runs(text, runs, fallback_color)
+    if len(colors) != len(text) or len({c for c in colors if c}) <= 1:
+        return None
+    for colon_idx in colon_positions:
+        split_idx = colon_idx + 1
+        prefix = text[:split_idx]
+        suffix = text[split_idx:]
+        prefix_visible = [c for c in prefix if c.strip() and c not in "：:"]
+        suffix_visible = [c for c in suffix if c.strip()]
+        if len(prefix_visible) < 2 or len(prefix_visible) > 14:
+            continue
+        if len(suffix_visible) < 3:
+            continue
+        prefix_colors = [colors[i] for i in range(split_idx)
+                         if text[i].strip() and colors[i]]
+        suffix_colors = [colors[i] for i in range(split_idx, len(text))
+                         if text[i].strip() and colors[i]]
+        if not prefix_colors or not suffix_colors:
+            continue
+        prefix_color = max(set(prefix_colors), key=prefix_colors.count)
+        suffix_color = max(set(suffix_colors), key=suffix_colors.count)
+        if prefix_color == suffix_color or _color_close(
+                prefix_color, suffix_color, tol=30):
+            continue
+        if prefix_colors.count(prefix_color) < max(2, int(0.65 * len(prefix_colors))):
+            continue
+        if suffix_colors.count(suffix_color) < max(2, int(0.55 * len(suffix_colors))):
+            continue
+        return split_idx
+    return None
 
 
 def mixed_size_runs_from_char_boxes(
@@ -1398,10 +1463,17 @@ def mixed_size_runs_from_char_boxes(
     if not char_boxes or len(char_boxes) != len(text) or pt_per_px <= 0:
         return None
     open_indices = [i for i, c in enumerate(text) if c in "（("]
-    if not open_indices:
-        return None
-    open_idx = open_indices[0]
-    if open_idx < 2 or len(text) - open_idx < 3:
+    split_kind = "paren"
+    if open_indices:
+        split_idx = open_indices[0]
+    else:
+        label_split = _label_prefix_split_index(
+            text, existing_runs, fallback_color)
+        if label_split is None:
+            return None
+        split_kind = "label"
+        split_idx = label_split
+    if split_idx < 2 or len(text) - split_idx < 3:
         return None
 
     line_bg = _sample_background_for_bbox(source, bbox)
@@ -1420,8 +1492,8 @@ def mixed_size_runs_from_char_boxes(
             vals.append(int(h))
         return vals
 
-    prefix = visible_heights(range(0, open_idx))
-    suffix = visible_heights(range(open_idx + 1, len(text)))
+    prefix = visible_heights(range(0, split_idx))
+    suffix = visible_heights(range(split_idx, len(text)))
     if len(prefix) < 2 or len(suffix) < 2:
         return None
     prefix_h = float(np.median(prefix))
@@ -1441,37 +1513,23 @@ def mixed_size_runs_from_char_boxes(
             max(int(b[3]) for b in boxes),
         )
 
-    prefix_text = text[:open_idx]
-    suffix_text = text[open_idx:]
-    prefix_box = _union_box(char_boxes[:open_idx])
-    suffix_box = _union_box(char_boxes[open_idx:])
-    prefix_init = font_size_pt(prefix_text,
-                               prefix_box[2] - prefix_box[0],
-                               prefix_box[3] - prefix_box[1],
-                               pt_per_px=pt_per_px)
-    suffix_init = font_size_pt(suffix_text,
-                               suffix_box[2] - suffix_box[0],
-                               suffix_box[3] - suffix_box[1],
-                               pt_per_px=pt_per_px)
-    prefix_fit = fit_text_render(
-        prefix_text, source, prefix_box,
-        initial_size=prefix_init,
-        initial_bold=bold,
-        initial_font=default_ppt_font(),
-        pt_per_px=pt_per_px,
-    )
-    suffix_fit = fit_text_render(
-        suffix_text, source, suffix_box,
-        initial_size=suffix_init,
-        initial_bold=bold,
-        initial_font=default_ppt_font(),
-        pt_per_px=pt_per_px,
-    )
+    prefix_text = text[:split_idx]
+    suffix_text = text[split_idx:]
+    prefix_box = _union_box(char_boxes[:split_idx])
+    suffix_box = _union_box(char_boxes[split_idx:])
 
-    base_size = int(prefix_fit["size"]) if prefix_fit else int(prefix_init)
-    suffix_size = int(suffix_fit["size"]) if suffix_fit else int(suffix_init)
-    if base_size - suffix_size < 2:
-        return None
+    def _initial_size(span_text: str, span_box: tuple[int, int, int, int],
+                      glyph_h: float) -> int:
+        if split_kind == "label":
+            raw = glyph_h * pt_per_px * CAPTURE_FACTOR_SHORT
+            return _snap_to_ladder(max(8.0, min(36.0, raw)))
+        return font_size_pt(span_text,
+                            span_box[2] - span_box[0],
+                            span_box[3] - span_box[1],
+                            pt_per_px=pt_per_px)
+
+    prefix_init = _initial_size(prefix_text, prefix_box, prefix_h)
+    suffix_init = _initial_size(suffix_text, suffix_box, suffix_h)
 
     def _mostly_cjk(value: str) -> bool:
         chars = [c for c in value if c.strip() and not _is_punct_run(c)]
@@ -1492,6 +1550,9 @@ def mixed_size_runs_from_char_boxes(
 
     prefix_bold = bool(bold)
     suffix_bold = bool(bold)
+    if split_kind == "label":
+        prefix_bold = _mostly_cjk(prefix_text)
+        suffix_bold = False
     prefix_density = _ink_density(prefix_box, prefix_h)
     if (not prefix_bold
             and _mostly_cjk(prefix_text)
@@ -1500,9 +1561,33 @@ def mixed_size_runs_from_char_boxes(
             and prefix_density >= 0.52):
         prefix_bold = True
 
-    sizes = [base_size if i < open_idx else suffix_size
+    prefix_fit = fit_text_render(
+        prefix_text, source, prefix_box,
+        initial_size=prefix_init,
+        initial_bold=prefix_bold,
+        initial_font=default_ppt_font(),
+        pt_per_px=pt_per_px,
+    )
+    suffix_fit = fit_text_render(
+        suffix_text, source, suffix_box,
+        initial_size=suffix_init,
+        initial_bold=suffix_bold,
+        initial_font=default_ppt_font(),
+        pt_per_px=pt_per_px,
+    )
+
+    base_size = int(prefix_fit["size"]) if prefix_fit else int(prefix_init)
+    suffix_size = int(suffix_fit["size"]) if suffix_fit else int(suffix_init)
+    if prefix_fit:
+        prefix_bold = bool(prefix_fit["bold"])
+    if suffix_fit:
+        suffix_bold = bool(suffix_fit["bold"])
+    if base_size - suffix_size < 2:
+        return None
+
+    sizes = [base_size if i < split_idx else suffix_size
              for i in range(len(text))]
-    bolds = [prefix_bold if i < open_idx else suffix_bold
+    bolds = [prefix_bold if i < split_idx else suffix_bold
              for i in range(len(text))]
     colors = _char_colors_from_runs(text, existing_runs, fallback_color)
     return {
@@ -1970,6 +2055,7 @@ def fit_text_render(
             bold=bool(best["bold"]),
         ) + 8,
     )
+    text_w = min(int(text_w), max(1, int(source.shape[1]) - fit_x))
     text_h = max(
         bbox_h + 4,
         int(round(max(float(ry2) + 4.0, line_px * 1.35))),
@@ -1986,8 +2072,76 @@ def fit_text_render(
     }
 
 
-_ICON_PAD_ROLES = {"small_icon", "preserve_visual_icon", "subicon", "line_subicon"}
+_ICON_PAD_ROLES = {
+    "small_icon",
+    "preserve_visual_icon",
+    "subicon",
+    "badge_subicon",
+    "connector",
+    "line_subicon",
+}
 _SPARSE_VISUAL_ROLES = _ICON_PAD_ROLES | {"thin_rule", "outline"}
+
+
+def _scrub_text_boxes_from_icon_crop(
+    crop_bgr: np.ndarray,
+    crop_box: tuple[int, int, int, int],
+    text_boxes: list[tuple[int, int, int, int]],
+    *,
+    alpha: np.ndarray | None = None,
+) -> np.ndarray:
+    """Remove OCR-text residue from a clean-cropped icon asset.
+
+    The source crop is already text-erased, but high-contrast text on
+    saturated icon fills can leave a faint local texture after the global
+    eraser. A second, crop-local fill keeps the icon asset neutral under
+    the editable PPT text that will be rendered above it.
+    """
+    if crop_bgr.size == 0 or not text_boxes:
+        return crop_bgr
+    x1, y1, x2, y2 = crop_box
+    h, w = crop_bgr.shape[:2]
+    if h == 0 or w == 0:
+        return crop_bgr
+    support = None
+    if alpha is not None and alpha.shape[:2] == (h, w):
+        support = alpha > 16
+    out = crop_bgr.copy()
+    for tx1, ty1, tx2, ty2 in text_boxes:
+        lx1 = max(0, tx1 - x1)
+        ly1 = max(0, ty1 - y1)
+        lx2 = min(w, tx2 - x1)
+        ly2 = min(h, ty2 - y1)
+        if lx2 <= lx1 or ly2 <= ly1:
+            continue
+        mask = np.zeros((h, w), dtype=bool)
+        mask[ly1:ly2, lx1:lx2] = True
+        if support is not None:
+            mask &= support
+        if int(mask.sum()) < 4:
+            continue
+
+        pad = max(4, min(10, int(round(max(lx2 - lx1, ly2 - ly1) * 0.18))))
+        rx1, ry1 = max(0, lx1 - pad), max(0, ly1 - pad)
+        rx2, ry2 = min(w, lx2 + pad), min(h, ly2 + pad)
+        ring = np.zeros((h, w), dtype=bool)
+        ring[ry1:ry2, rx1:rx2] = True
+        ring &= ~mask
+        if support is not None:
+            ring &= support
+        pixels = out[ring]
+        fill = None
+        if len(pixels) >= 12:
+            flat = pixels.reshape(-1, 3).astype(np.uint8)
+            quant = (flat.astype(np.uint16) // 16).astype(np.uint8)
+            keys, counts = np.unique(quant, axis=0, return_counts=True)
+            key = keys[int(np.argmax(counts))]
+            cluster = flat[(quant == key).all(axis=1)]
+            if len(cluster) < max(8, int(0.20 * len(flat))):
+                cluster = flat
+            fill = np.median(cluster.reshape(-1, 3), axis=0).astype(np.uint8)
+        inpaint_region_inplace(out, mask, radius=2, fill_color=fill)
+    return out
 
 
 def _intersection_area(a: tuple[int, int, int, int],
@@ -1999,6 +2153,34 @@ def _intersection_area(a: tuple[int, int, int, int],
     if ox2 <= ox1 or oy2 <= oy1:
         return 0
     return (ox2 - ox1) * (oy2 - oy1)
+
+
+def _connector_on_container_border(
+    container_box: tuple[int, int, int, int],
+    connector_box: tuple[int, int, int, int],
+) -> bool:
+    """Return true when a connector bbox is really a container border dash."""
+    px1, py1, px2, py2 = container_box
+    cx1, cy1, cx2, cy2 = connector_box
+    c_area = max(1, (cx2 - cx1) * (cy2 - cy1))
+    if _intersection_area(container_box, connector_box) < 0.80 * c_area:
+        return False
+    pw = max(1, px2 - px1)
+    ph = max(1, py2 - py1)
+    cw = max(1, cx2 - cx1)
+    ch = max(1, cy2 - cy1)
+    band = max(4, min(14, int(round(min(pw, ph) * 0.22))))
+    near_top = cy1 - py1 <= band
+    near_bottom = py2 - cy2 <= band
+    near_left = cx1 - px1 <= band
+    near_right = px2 - cx2 <= band
+    horizontal = cw >= max(12, ch * 2.0)
+    vertical = ch >= max(12, cw * 2.0)
+    if horizontal and (near_top or near_bottom):
+        return True
+    if vertical and (near_left or near_right):
+        return True
+    return bool((near_top or near_bottom) and (near_left or near_right))
 
 
 def _overlaps_text(box: tuple[int, int, int, int],
@@ -2362,6 +2544,15 @@ def _trim_short_stat_text_bbox(
     start after it or the rendered text will sit on top of the icon.
     """
     if len(text) > 5 or not any(c.isdigit() for c in text):
+        return bbox
+    compact = "".join(c for c in text if not c.isspace())
+    if not compact:
+        return bbox
+    # This trim is for stat callouts where a visual icon is pulled into a
+    # number-first OCR box (`7分钟`, `+23%`, `$1B`). If the text starts
+    # with a real word glyph (`前10名`, `第4作者`), the leading component
+    # is part of the text and must stay in the bbox.
+    if not (compact[0].isdigit() or compact[0] in "+-￥¥$€£"):
         return bbox
     x1, y1, x2, y2 = bbox
     h_img, w_img = source.shape[:2]
@@ -3204,11 +3395,20 @@ def _run(args: argparse.Namespace) -> None:
             return visible_count < max(4, int(0.001 * h * w))
         return False
 
-    child_roles = {"internal", "subicon", "line_subicon", "preserve_visual_icon"}
+    child_roles = {
+        "container",
+        "internal",
+        "subicon",
+        "badge_subicon",
+        "connector",
+        "line_subicon",
+        "preserve_visual_icon",
+    }
 
     def _child_source_image(child: dict) -> np.ndarray:
-        if child.get("role") == "preserve_visual_icon":
-            return source
+        role = child.get("role")
+        if role in _ICON_PAD_ROLES or role == "preserve_visual_icon":
+            return text_only if text_only is not None else cleaned
         if child.get("source") == "source":
             return text_only if text_only is not None else source
         if child.get("source") == "original":
@@ -3234,10 +3434,19 @@ def _run(args: argparse.Namespace) -> None:
                 mask = m[cy1:cy2, cx1:cx2] > 16
                 if int(mask.sum()) >= 4:
                     return (cx1, cy1, cx2, cy2), mask
-        if role == "subicon":
+        if role == "container":
+            # A nested card/panel is itself an independent object. Remove the
+            # full child bbox from any larger parent asset so deleting the
+            # card in PowerPoint does not reveal an identical baked copy.
+            mask = np.ones(crop_child.shape[:2], dtype=bool)
+        elif role == "subicon":
             gray = cv2.cvtColor(crop_child, cv2.COLOR_BGR2GRAY)
             hsv_ = cv2.cvtColor(crop_child, cv2.COLOR_BGR2HSV)
             mask = (gray > 185) & (hsv_[:, :, 1] < 70)
+        elif role == "badge_subicon":
+            mask = _line_art_alpha(crop_child) > 12
+        elif role == "connector":
+            mask = _line_art_alpha(crop_child) > 12
         elif role == "line_subicon":
             mask = _line_art_alpha(crop_child) > 12
         elif role in {"internal", "preserve_visual_icon"}:
@@ -3271,6 +3480,13 @@ def _run(args: argparse.Namespace) -> None:
             if c_area >= p_area * 0.55:
                 continue
             cw, ch = cx2 - cx1, cy2 - cy1
+            if (
+                parent.get("role") == "container"
+                and role == "connector"
+                and _connector_on_container_border(
+                    parent_box, (cx1, cy1, cx2, cy2))
+            ):
+                continue
             explicit_child = role in child_roles
             implicit_small_child = c_area <= 18000 and max(cw, ch) <= 180
             implicit_flat_child = (
@@ -3289,13 +3505,32 @@ def _run(args: argparse.Namespace) -> None:
                 out.append(child)
         return out
 
+    def _connector_carried_by_container(el: dict) -> bool:
+        if el.get("role") != "connector":
+            return False
+        child_box = tuple(int(v) for v in el["bbox"])
+        for parent in image_inventory:
+            if parent is el or parent.get("role") != "container":
+                continue
+            parent_box = tuple(int(v) for v in parent["bbox"])
+            if _connector_on_container_border(parent_box, child_box):
+                return True
+        return False
+
     def _inpaint_children_for_parent_asset(
         crop_bgr: np.ndarray,
         parent: dict,
         parent_box: tuple[int, int, int, int],
     ) -> np.ndarray:
         role = parent.get("role")
-        if role in {"background", "internal", "subicon", "line_subicon"}:
+        if role in {
+            "background",
+            "internal",
+            "subicon",
+            "badge_subicon",
+            "connector",
+            "line_subicon",
+        }:
             return crop_bgr
         children = _contained_child_entries(parent, parent_box)
         if not children:
@@ -3379,7 +3614,15 @@ def _run(args: argparse.Namespace) -> None:
             if parent is el:
                 continue
             role = parent.get("role")
-            if role in {"outline", "background", "internal", "subicon", "line_subicon"}:
+            if role in {
+                "outline",
+                "background",
+                "internal",
+                "subicon",
+                "badge_subicon",
+                "connector",
+                "line_subicon",
+            }:
                 continue
             px1, py1, px2, py2 = (int(v) for v in parent["bbox"])
             parent_area = max(1, (px2 - px1) * (py2 - py1))
@@ -3487,21 +3730,22 @@ def _run(args: argparse.Namespace) -> None:
         x1, y1, x2, y2 = el["bbox"]
         if el["type"] == "image":
             asset_name = f"{el['id']}.png"
-            # Logo composites are cropped from the ORIGINAL image so brand
-            # text inside the logo stays visible. Subicons (white-on-dark
-            # pictograms detected inside dark cards) are also cropped from
-            # the source AND get a transparency mask so only the white icon
-            # strokes show — that lets the icon sit on top of the parent
-            # card without the dark-blue square around it. Internal shapes
-            # (numbered badges, photo placeholders) are source-cropped and
-            # rendered as opaque rectangles. preserve_visual_icon crops come
-            # from the original image too, but only after run_pipeline.py has
-            # proven the segment is a small icon, so normal body text is not
-            # baked into broad card assets. Other elements come from the
-            # cleaned image (text already erased, sub-shape holes filled by
-            # build_inventory).
-            if el.get("role") == "preserve_visual_icon":
-                src_img = source
+            # Container/icon-like assets are cropped from the text-erased
+            # clean sidecar so OCR glyphs cannot come back as baked pixels.
+            # For containers this also avoids using the later shape-filled
+            # cleaned image, where a border dash may already have been
+            # removed as a child candidate. Other elements come from the
+            # cleaned image.
+            role = el.get("role")
+            if _connector_carried_by_container(el):
+                continue
+            if role == "container":
+                src_img = text_only if text_only is not None else cleaned
+            elif role in _ICON_PAD_ROLES or role == "preserve_visual_icon":
+                # Icon-like assets must be cropped from the text-erased clean
+                # view. Cropping them from the original source reintroduces
+                # glyph pixels under the editable PPT text.
+                src_img = text_only if text_only is not None else cleaned
             elif el.get("source") == "original":
                 src_img = source
             elif el.get("source") == "source":
@@ -3511,7 +3755,6 @@ def _run(args: argparse.Namespace) -> None:
                 src_img = text_only if text_only is not None else source
             else:
                 src_img = cleaned
-            role = el.get("role")
             mask_path = el.get("mask_path")
             has_mask = bool(mask_path and Path(mask_path).exists())
             if role == "outline" and _outline_carried_by_large_parent(el):
@@ -3554,6 +3797,11 @@ def _run(args: argparse.Namespace) -> None:
                 and original_w * original_h <= 80000
             )
             sparse_visual = role in _SPARSE_VISUAL_ROLES or implicit_cv2_icon
+            scrub_icon_text = (
+                role in _ICON_PAD_ROLES
+                or role == "preserve_visual_icon"
+                or implicit_cv2_icon
+            )
             x1, y1, x2, y2 = _pad_icon_bbox(
                 (x1, y1, x2, y2), src_img, text_boxes, role,
                 allow_text_overlap=text_erased_crop)
@@ -3613,6 +3861,10 @@ def _run(args: argparse.Namespace) -> None:
                             alpha[ry1:ry2, rx1:rx2] = 0
                     if _is_empty_asset(crop, alpha, sparse_ok=sparse_visual):
                         continue
+                    if scrub_icon_text:
+                        crop = _scrub_text_boxes_from_icon_crop(
+                            crop, (int(x1), int(y1), int(x2), int(y2)),
+                            text_boxes, alpha=alpha)
                     rgba = np.dstack([crop, alpha])
                     cv2.imwrite(str(asset_dir / asset_name), rgba)
                     manifest_assets.append({
@@ -3640,15 +3892,43 @@ def _run(args: argparse.Namespace) -> None:
                 hsv_ = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
                 alpha = np.clip((gray.astype(int) - 180) * 3, 0, 255).astype(np.uint8)
                 alpha[hsv_[:, :, 1] > 60] = 0
+                crop = _scrub_text_boxes_from_icon_crop(
+                    crop, (int(x1), int(y1), int(x2), int(y2)),
+                    text_boxes, alpha=alpha)
+                rgba = np.dstack([crop, alpha])
+                cv2.imwrite(str(asset_dir / asset_name), rgba)
+            elif el.get("role") == "badge_subicon":
+                alpha = _line_art_alpha(crop)
+                if int((alpha > 16).sum()) < 4:
+                    continue
+                crop = _scrub_text_boxes_from_icon_crop(
+                    crop, (int(x1), int(y1), int(x2), int(y2)),
+                    text_boxes, alpha=alpha)
+                rgba = np.dstack([crop, alpha])
+                cv2.imwrite(str(asset_dir / asset_name), rgba)
+            elif el.get("role") == "connector":
+                alpha = _line_art_alpha(crop)
+                if int((alpha > 16).sum()) < 4:
+                    continue
+                crop = _scrub_text_boxes_from_icon_crop(
+                    crop, (int(x1), int(y1), int(x2), int(y2)),
+                    text_boxes, alpha=alpha)
                 rgba = np.dstack([crop, alpha])
                 cv2.imwrite(str(asset_dir / asset_name), rgba)
             elif el.get("role") == "line_subicon":
                 alpha = _line_art_alpha(crop)
                 if int((alpha > 16).sum()) < 4:
                     continue
+                crop = _scrub_text_boxes_from_icon_crop(
+                    crop, (int(x1), int(y1), int(x2), int(y2)),
+                    text_boxes, alpha=alpha)
                 rgba = np.dstack([crop, alpha])
                 cv2.imwrite(str(asset_dir / asset_name), rgba)
             else:
+                if scrub_icon_text:
+                    crop = _scrub_text_boxes_from_icon_crop(
+                        crop, (int(x1), int(y1), int(x2), int(y2)),
+                        text_boxes)
                 cv2.imwrite(str(asset_dir / asset_name), crop)
             manifest_assets.append({
                 "name": asset_name,
@@ -3821,6 +4101,7 @@ def _run(args: argparse.Namespace) -> None:
                 valign_mode = "top"
             elif mixed_size is not None:
                 valign_mode = "top"
+            text_w = min(int(text_w), max(1, int(source.shape[1]) - int(text_x)))
             # All title centring runs at PPTX-build time in
             # build_pptx_from_layout.apply_title_centering, which
             # filters on length ≤ 8 + smallest-containing-image +
