@@ -7,9 +7,10 @@ tests/reports/
 # Cached pipeline outputs for tests (keyed by source hash)
 tests/_work/
 
-# Local/private source images
+# Local/private source images + pipeline outputs
 slides_private/
-scratch/
+input/
+output/
 tmp/
 
 # Python environments and caches

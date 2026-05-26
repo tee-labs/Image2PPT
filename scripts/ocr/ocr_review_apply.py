@@ -19,7 +19,7 @@ Two modes:
 
   Batch (one command for an entire run):
       python scripts/ocr/ocr_review_apply.py \\
-          --work-dir output_project/<run>/ [--require-filled]
+          --work-dir output/<run>/ [--require-filled]
 
 In batch mode every `inventory/page_NN.ocr.json` paired with the
 matching `inventory/page_NN.ocr_review.json` is processed in turn.

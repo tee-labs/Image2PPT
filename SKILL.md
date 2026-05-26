@@ -38,7 +38,7 @@ use `bash scripts/bootstrap.sh --no-system`.
 Every job goes under:
 
 ```text
-output_project/<name>_<YYYYMMDD_HHMMSS>/
+output/<name>_<YYYYMMDD>/
 ├── slides.pptx
 ├── qa.json
 ├── previews/
@@ -64,7 +64,7 @@ slides/
 Run the one-command pipeline:
 
 ```bash
-RUN="output_project/demo_$(date +%Y%m%d_%H%M%S)"
+RUN="output/demo_$(date +%Y%m%d)"
 SRC="slides"
 
 python scripts/convert.py --source "$SRC" --work-dir "$RUN"

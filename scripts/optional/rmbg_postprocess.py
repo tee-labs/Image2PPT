@@ -20,8 +20,8 @@ When to skip an asset:
 
 Usage:
     python scripts/optional/rmbg_postprocess.py \\
-        --assets-dir output_project/<run_dir>/assets/page_NN \\
-        --layout    output_project/<run_dir>/layouts/page_NN.layout.json
+        --assets-dir output/<run_dir>/assets/page_NN \\
+        --layout    output/<run_dir>/layouts/page_NN.layout.json
 
 The layout JSON is read for per-element bbox so we can filter sensibly.
 Each qualifying PNG is overwritten in place with an RGBA version.

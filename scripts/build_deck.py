@@ -17,7 +17,7 @@ The work directory's ocr/ subfolder must already contain
 Usage:
     python scripts/build_deck.py \\
         --source-dir <slides_image_dir> \\
-        --work-dir   output_project/<name>_<YYYYMMDD_HHMMSS>/
+        --work-dir   output/<name>_<YYYYMMDD>/
 
 The orchestrator imports `run_pipeline` in-process so the per-page
 loop reuses one Python session. The other four stages are simple
@@ -223,7 +223,6 @@ def main() -> int:
     layouts_dir = work / "layouts"
     combined_path = layouts_dir / "combined.layout.json"
     pptx_path = work / "slides.pptx"
-    draft_pptx_path = work / "slides.draft.pptx"
     qa_path = work / "qa.json"
     previews_dir = work / "previews"
     work.mkdir(parents=True, exist_ok=True)

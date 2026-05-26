@@ -24,7 +24,7 @@ re-run with `--icon-decisions` to feed verdicts back into erase_text.
 Usage:
     python scripts/page/run_pipeline.py \\
         --source-dir <slides_image_dir> \\
-        --work-dir output_project/<name>_<YYYYMMDD_HHMMSS>/
+        --work-dir output/<name>_<YYYYMMDD>/
 
 The work dir is expected to already contain
 `<work>/ocr/page_NN.ocr.json` files (produced by prepare_ocr.py +
@@ -71,6 +71,7 @@ import inventory_to_layout as i2l
 import simple_layout as sl
 import _heuristics as heur
 import detect_tables as dt
+from shared.geometry import intersection_area as _box_intersection
 from image_sources import find_page_image, supported_image_formats
 
 
@@ -141,17 +142,6 @@ def page_numbers(args) -> list[str]:
 # =============================================================================
 # Geometry helpers
 # =============================================================================
-
-
-def _box_intersection(a: tuple[int, int, int, int],
-                      b: tuple[int, int, int, int]) -> int:
-    ax1, ay1, ax2, ay2 = a
-    bx1, by1, bx2, by2 = b
-    ox1, oy1 = max(ax1, bx1), max(ay1, by1)
-    ox2, oy2 = min(ax2, bx2), min(ay2, by2)
-    if ox2 <= ox1 or oy2 <= oy1:
-        return 0
-    return (ox2 - ox1) * (oy2 - oy1)
 
 
 def _coeff_var(values: list[float]) -> float:

@@ -26,6 +26,28 @@ Nearly all text in the source image is restored as editable PPT text boxes, whil
 - No extra cloud API required: OCR, image segmentation, PPTX generation, and preview checks all run locally.
 - Supports common bitmap inputs: PNG, JPG/JPEG, WebP, BMP, TIF/TIFF.
 
+## Example
+
+The image on the left is the input (a GPT-generated privacy-computing diagram); the image on the right is the `.pptx` rebuilt by DeckWeaver, rendered back to PNG via LibreOffice. Every text element is an editable text box, and the three telecom operator icons, the central MPC lock, the connectors, etc. are extracted as independent, movable PNG objects.
+
+<table>
+  <tr>
+    <td align="center"><b>Input</b></td>
+    <td align="center"><b>Rebuilt PPT (preview)</b></td>
+  </tr>
+  <tr>
+    <td><img src="assets/examples/source-privacy-compute.png" alt="Source" width="100%"></td>
+    <td><img src="assets/examples/rendered-privacy-compute.png" alt="Rebuilt PPT preview" width="100%"></td>
+  </tr>
+</table>
+
+Reproduce this example (~30 seconds, local PaddleOCR + LibreOffice):
+
+```bash
+python scripts/convert.py --source "input/<your_image>.png"
+# → output/<image_stem>_<YYYYMMDD>/slides.pptx
+```
+
 ## Quick Start
 
 ### Option 1: Use As A Skill / Agent Tool
@@ -50,7 +72,7 @@ You can also specify a single image:
 Please use the skill in this project to convert /path/to/page_01.png into an editable PPT.
 ```
 
-**Note**: On the first run, the agent will run `bash scripts/bootstrap.sh` to install dependencies, which may take some time. The final result is written to `output_project/<run>/slides.pptx`.
+**Note**: On the first run, the agent will run `bash scripts/bootstrap.sh` to install dependencies, which may take some time. The final result is written to `output/<run>/slides.pptx`.
 
 ### Option 2: Use As A Standalone CLI Tool
 
@@ -83,7 +105,7 @@ python scripts/convert.py --source /path/to/page_01.png
 The generated result is written to:
 
 ```text
-output_project/<run>/
+output/<run>/
 ├── slides.pptx       # final editable PowerPoint deck
 ├── qa.json           # PPTX structure inspection report
 ├── previews/         # rendered previews for manual comparison
@@ -96,7 +118,7 @@ output_project/<run>/
 For debugging, you can also split the one-command flow into three manual steps:
 
 ```bash
-RUN="output_project/demo_$(date +%Y%m%d_%H%M%S)"
+RUN="output/demo_$(date +%Y%m%d)"
 SRC="slides"
 
 python scripts/ocr/prepare_ocr.py \
@@ -156,7 +178,7 @@ python scripts/build_deck.py --icon-review ...
 - The one-command entry supports a single image or a folder of images. If images are not named as `page_NN.<ext>`, they are copied into the run directory and numbered automatically.
 - Multi-page decks work best when all source images share the same aspect ratio. PowerPoint only supports one slide size per file.
 - Complex charts are currently preserved as movable picture objects first, instead of being rebuilt as editable data charts.
-- Generated files are written to `output_project/` by default, and this directory is not committed to Git.
+- Generated files are written to `output/` by default, and this directory is not committed to Git.
 
 ## Acknowledgements
 

@@ -13,8 +13,8 @@ Both tools are required:
 
 Usage:
     python scripts/verify/render_preview.py \\
-        --pptx output_project/<run>/output/slides.pptx \\
-        --out-dir output_project/<run>/output \\
+        --pptx output/<run>/output/slides.pptx \\
+        --out-dir output/<run>/output \\
         [--dpi 100] [--keep-pdf]
 
 Writes:

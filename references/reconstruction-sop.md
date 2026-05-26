@@ -17,7 +17,7 @@ one source image per page number.
 ## 2. Run OCR
 
 ```bash
-RUN="output_project/demo_$(date +%Y%m%d_%H%M%S)"
+RUN="output/demo_$(date +%Y%m%d)"
 SRC="slides"
 
 python scripts/ocr/prepare_ocr.py \

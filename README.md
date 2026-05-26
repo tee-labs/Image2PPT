@@ -26,6 +26,28 @@ DeckWeaver 可以把 GPT、Gemini等输出的图片重建为可编辑的 PowerPo
 - 无需额外云端 API：OCR、图像分割、PPTX 生成和预览检查都在本地运行。
 - 支持常见位图输入：PNG、JPG/JPEG、WebP、BMP、TIF/TIFF。
 
+## 效果示例
+
+下图左侧是输入的原图（GPT 生成的隐私计算示意图），右侧是 DeckWeaver 自动重建后的 `.pptx` 经 LibreOffice 渲染回 PNG 的预览。文字全部是可编辑文本框，三大运营商图标、MPC 中心锁、连接线等都拆成了独立可移动 PNG 对象。
+
+<table>
+  <tr>
+    <td align="center"><b>输入原图</b></td>
+    <td align="center"><b>重建 PPT（preview）</b></td>
+  </tr>
+  <tr>
+    <td><img src="assets/examples/source-privacy-compute.png" alt="原图" width="100%"></td>
+    <td><img src="assets/examples/rendered-privacy-compute.png" alt="重建 PPT 预览" width="100%"></td>
+  </tr>
+</table>
+
+复现这一张的命令（耗时约 30 秒，本地 PaddleOCR + LibreOffice）：
+
+```bash
+python scripts/convert.py --source "input/<your_image>.png"
+# → output/<image_stem>_<YYYYMMDD>/slides.pptx
+```
+
 ## 快速开始
 
 ### 方式一：作为 Skill / Agent 工具使用
@@ -52,7 +74,7 @@ git clone https://github.com/GuopengLin/Image2PPT.git
 请使用这个项目里的 skill，把 /path/to/page_01.png 转换成可编辑 PPT。
 ```
 
-**注意** 首次运行时，agent 会先执行 `bash scripts/bootstrap.sh` 安装依赖，可能需要一定的耗时。最终结果在 `output_project/<run>/slides.pptx`。
+**注意** 首次运行时，agent 会先执行 `bash scripts/bootstrap.sh` 安装依赖，可能需要一定的耗时。最终结果在 `output/<run>/slides.pptx`。
 
 ### 方式二：作为独立命令行工具使用
 
@@ -88,7 +110,7 @@ python scripts/convert.py --source /path/to/page_01.png
 生成结果会在：
 
 ```text
-output_project/<run>/
+output/<run>/
 ├── slides.pptx       # 最终可编辑 PPT
 ├── qa.json           # PPTX 结构检查报告
 ├── previews/         # 预览图，用于人工比对
@@ -101,7 +123,7 @@ output_project/<run>/
 如果需要调试，也可以把一键流程拆成三步手动运行：
 
 ```bash
-RUN="output_project/demo_$(date +%Y%m%d_%H%M%S)"
+RUN="output/demo_$(date +%Y%m%d)"
 SRC="slides"
 
 python scripts/ocr/prepare_ocr.py \
@@ -162,7 +184,7 @@ python scripts/build_deck.py --icon-review ...
 - 一键入口支持单张图片或图片文件夹；如果图片没有按 `page_NN.<ext>` 命名，会自动复制到运行目录并按页码编号。
 - 多页 PPT 最好保持一致比例；PowerPoint 一个文件只能有一种页面尺寸。
 - 复杂图表目前会优先作为可移动图片对象保留，而不是还原为可编辑数据图表。
-- 生成文件默认写入 `output_project/`，该目录不会提交到 Git。
+- 生成文件默认写入 `output/`，该目录不会提交到 Git。
 
 ## 致谢与第三方声明
 

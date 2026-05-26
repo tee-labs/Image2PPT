@@ -46,8 +46,8 @@ Usage:
     # Or: agent points at table region within the slide
     python scripts/tables/table_recognize.py slide.jpg \\
         --bbox 100,200,900,650 \\
-        --ocr output_project/<run_dir>/inventory/page_NN.ocr.json \\
-        --out output_project/<run_dir>/inventory/page_NN.table.json
+        --ocr output/<run_dir>/inventory/page_NN.ocr.json \\
+        --out output/<run_dir>/inventory/page_NN.table.json
 """
 
 from __future__ import annotations

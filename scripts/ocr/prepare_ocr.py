@@ -45,7 +45,7 @@ corrected_text in the review JSONs, then build_deck.py reruns.
 Usage:
     python scripts/ocr/prepare_ocr.py \\
         --source-dir slides/ \\
-        --work-dir   output_project/<name>_<YYYYMMDD_HHMMSS>/
+        --work-dir   output/<name>_<YYYYMMDD>/
 
 Optional flags:
     --pages 1,4,8         only process specified page numbers

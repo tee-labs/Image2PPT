@@ -55,7 +55,7 @@ Each page number should appear once. If both `page_01.png` and
 ## Outputs
 
 ```text
-output_project/<run>/
+output/<run>/
 ├── slides.pptx
 ├── qa.json
 ├── previews/page-NN.png

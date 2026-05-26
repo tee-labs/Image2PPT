@@ -30,7 +30,7 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--work-dir", "-o",
-        help="Output run directory. Default: output_project/<source>_<timestamp>.",
+        help="Output run directory. Default: output/<source-stem-or-dir-name>_<YYYYMMDD>.",
     )
     p.add_argument(
         "--name",
@@ -107,10 +107,16 @@ def slugify(value: str) -> str:
 
 
 def default_work_dir(source: Path, name: str | None) -> Path:
+    """Default run dir under `output/`.
+
+    Naming convention (matches user request):
+      * single-image input  → `output/<image_stem>_<YYYYMMDD>/`
+      * directory input     → `output/<dir_name>_<YYYYMMDD>/`
+    """
     default_name = source.stem if source.is_file() else source.name
     run_name = slugify(name or default_name)
-    timestamp = time.strftime("%Y%m%d_%H%M%S")
-    return Path("output_project") / f"{run_name}_{timestamp}"
+    date = time.strftime("%Y%m%d")
+    return Path("output") / f"{run_name}_{date}"
 
 
 def supported_file(path: Path) -> bool:
