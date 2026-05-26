@@ -26,6 +26,9 @@ import time
 import warnings
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from shared.gpu import describe as describe_devices, paddle_device  # noqa: E402
+
 
 def banner(name: str) -> None:
     print(f"\n=== {name} ===", flush=True)
@@ -48,6 +51,7 @@ def warmup_paddle() -> None:
     t0 = time.time()
     ocr = PaddleOCR(
         lang="ch",
+        device=paddle_device(),
         use_doc_orientation_classify=False,
         use_doc_unwarping=False,
         use_textline_orientation=False,
@@ -91,6 +95,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    print(describe_devices(), flush=True)
     steps = [
         (args.skip_paddle, warmup_paddle),
         (args.skip_rmbg, warmup_rmbg),

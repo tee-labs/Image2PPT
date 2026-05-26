@@ -29,6 +29,11 @@ import sys
 import warnings
 from pathlib import Path
 
+# scripts/ on sys.path so shared.* is importable when this file is run
+# directly as a CLI (`python scripts/ocr/ocr_paddle.py ...`).
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from shared.gpu import paddle_device  # noqa: E402
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="PP-OCRv5 OCR → JSON.")
@@ -145,6 +150,7 @@ def main() -> int:
     # in-bbox color changes (e.g. a red keyword inside a black line).
     ocr = PaddleOCR(
         lang=args.lang,
+        device=paddle_device(),
         use_doc_orientation_classify=False,
         use_doc_unwarping=False,
         use_textline_orientation=False,

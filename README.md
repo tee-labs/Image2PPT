@@ -152,6 +152,30 @@ python scripts/build_deck.py \
 如果 `build_deck.py` 提示有 OCR 不确定项，可以打开 `ocr/page_NN.ocr_review.annotated.png` 检查高亮文字，修改对应 `ocr_review.json` 的 `corrected_text` 后重新运行后两步。
 默认情况下，只要没有使用 `--skip-render`，`build_deck.py` 会先渲染文字校准预览来校准字号，再多轮渲染校准文本框位置。
 
+## GPU 加速（自动）
+
+主要的推理瓶颈在 PaddleOCR (PP-OCRv5) 和可选的 PaddleX 表格识别、ONNX RMBG。
+`bootstrap.sh` 会自行检测：发现 `nvidia-smi` 并且能列出设备就装 GPU 版本依赖
+（`paddlepaddle-gpu` + `onnxruntime-gpu`），否则装 CPU 版。运行时代码也是
+auto 检测，能用 GPU 就用 GPU，无需任何额外开关。
+
+```bash
+bash scripts/bootstrap.sh          # 自动选 GPU 或 CPU
+bash scripts/bootstrap.sh --cpu    # 有显卡也强制装 CPU 版
+```
+
+需要临时关掉/打开 GPU 时（比如调试或对比性能），可以加一个环境变量：
+
+```bash
+DECKWEAVER_DEVICE=cpu  python scripts/convert.py --source ...   # 强制 CPU
+DECKWEAVER_DEVICE=gpu  python scripts/convert.py --source ...   # 强制请求 GPU
+DECKWEAVER_DEVICE=auto python scripts/convert.py --source ...   # 默认
+```
+
+注意：macOS（含 Apple Silicon）目前只保留 ONNX 的 CoreML 加速；PaddlePaddle
+官方没有 MPS 后端，强切 GPU 会直接回落 CPU。EasyOCR 的 MPS 路径默认关闭，
+因为每次加载都会刷警告且对小裁剪框速度提升不明显。
+
 ## 常用参数
 
 ```bash

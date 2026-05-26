@@ -53,10 +53,14 @@ confs > 0. If Tesseract returns empty text, conf = 0.0.
 from __future__ import annotations
 
 import re
+import sys
 import unicodedata
 from dataclasses import dataclass, asdict, field
 from pathlib import Path
 from typing import Optional
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from shared.gpu import easyocr_use_gpu  # noqa: E402
 
 # Lazy engine loaders. The first call constructs each engine; subsequent
 # calls reuse the cached instance — this keeps prepare_ocr.py warm across
@@ -69,9 +73,12 @@ def _get_easyocr():
     global _easy_reader
     if _easy_reader is None:
         import easyocr  # noqa: E402
-        # gpu=False because MPS-on-PyTorch warns on every load; CPU is
-        # fast enough at ~50 ms / small crop.
-        _easy_reader = easyocr.Reader(["ch_sim", "en"], gpu=False, verbose=False)
+        # GPU only when CUDA is actually present (see shared/gpu.py — MPS
+        # stays off by default because it spams a per-load warning and
+        # CPU is already ~50 ms / small crop).
+        _easy_reader = easyocr.Reader(
+            ["ch_sim", "en"], gpu=easyocr_use_gpu(), verbose=False,
+        )
     return _easy_reader
 
 

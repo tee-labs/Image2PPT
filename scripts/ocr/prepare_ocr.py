@@ -82,6 +82,7 @@ from ocr_cross_verify import (  # noqa: E402
     run_easyocr, run_paddle_crop, run_tesseract,
 )
 from render_annotated_review import render_annotated_page  # noqa: E402
+from shared.gpu import paddle_device  # noqa: E402
 
 
 REVIEW_INSTRUCTIONS = (
@@ -363,11 +364,13 @@ def main() -> int:
               file=sys.stderr)
         return 1
 
-    print(f"\n=== Stage 1: PaddleOCR ({len(nums)} pages, warm model) ===",
-          flush=True)
+    device = paddle_device()
+    print(f"\n=== Stage 1: PaddleOCR ({len(nums)} pages, warm model, "
+          f"device={device}) ===", flush=True)
     t0 = time.time()
     ocr = PaddleOCR(
         lang=args.lang,
+        device=device,
         use_doc_orientation_classify=False,
         use_doc_unwarping=False,
         use_textline_orientation=False,

@@ -62,6 +62,9 @@ from pathlib import Path
 
 from PIL import Image
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from shared.gpu import paddle_device  # noqa: E402
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -243,7 +246,7 @@ def main() -> int:
         crop.save(tf.name)
         crop_path = tf.name
     try:
-        model = create_model(model_name=args.model)
+        model = create_model(model_name=args.model, device=paddle_device())
         results = list(model.predict(crop_path))
     finally:
         try:

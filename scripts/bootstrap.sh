@@ -12,7 +12,10 @@
 # Idempotent: re-running is safe; everything is skipped or cached.
 #
 # Usage:
-#   bash scripts/bootstrap.sh                # full install
+#   bash scripts/bootstrap.sh                # auto: GPU wheels if nvidia-smi
+#                                            #   is present, otherwise CPU wheels
+#   bash scripts/bootstrap.sh --cpu          # force CPU wheels even if a GPU
+#                                            #   is detected
 #   bash scripts/bootstrap.sh --skip-rmbg    # skip optional RMBG model
 #   bash scripts/bootstrap.sh --no-system    # skip system tools
 #                                            #   (only pip + warmup)
@@ -20,18 +23,30 @@ set -euo pipefail
 
 SKIP_RMBG=0
 NO_SYSTEM=0
+FORCE_CPU=0
 for arg in "$@"; do
     case "$arg" in
         --skip-rmbg)  SKIP_RMBG=1 ;;
         --no-system)  NO_SYSTEM=1 ;;
+        --cpu)        FORCE_CPU=1 ;;
         -h|--help)
-            sed -n '2,18p' "$0"
+            sed -n '2,21p' "$0"
             exit 0 ;;
         *)
             echo "Unknown flag: $arg" >&2
             exit 2 ;;
     esac
 done
+
+# Auto-detect GPU: install CUDA wheels iff nvidia-smi is on PATH AND it
+# actually reports a device. `nvidia-smi -L` exits non-zero (and prints
+# nothing) when no driver / device is visible, so this avoids installing
+# GPU wheels on hosts that just have the binary lying around.
+USE_GPU=0
+if [ "$FORCE_CPU" -eq 0 ] && command -v nvidia-smi >/dev/null 2>&1 \
+   && nvidia-smi -L >/dev/null 2>&1; then
+    USE_GPU=1
+fi
 
 REPO_ROOT="$( cd "$( dirname "${BASH_SOURCE[0]}" )/.." && pwd )"
 cd "$REPO_ROOT"
@@ -51,11 +66,30 @@ fi
 echo
 echo "=== 2/4 Python dependencies ==="
 python3 -m pip install --upgrade pip
+# Common deps — same regardless of CPU/GPU.
 python3 -m pip install \
     python-pptx pillow numpy opencv-python \
     'paddleocr>=3' 'paddlex[ocr]' \
     easyocr pytesseract \
-    onnxruntime huggingface_hub
+    huggingface_hub
+
+if [ "$USE_GPU" -eq 1 ]; then
+    echo
+    echo "  NVIDIA GPU detected — installing CUDA wheels"
+    echo "  (paddlepaddle-gpu + onnxruntime-gpu). Pass --cpu to opt out."
+    # PaddlePaddle ships separate CPU and GPU wheels. Uninstall the CPU
+    # wheel first so pip doesn't keep both around with conflicting
+    # binaries (which silently picks the wrong one at import time).
+    python3 -m pip uninstall -y paddlepaddle onnxruntime || true
+    python3 -m pip install paddlepaddle-gpu onnxruntime-gpu
+else
+    if [ "$FORCE_CPU" -eq 1 ]; then
+        echo "  --cpu set: installing CPU wheels."
+    else
+        echo "  No NVIDIA GPU detected — installing CPU wheels."
+    fi
+    python3 -m pip install onnxruntime
+fi
 
 if [ "$NO_SYSTEM" -eq 0 ]; then
     echo

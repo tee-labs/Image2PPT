@@ -39,6 +39,9 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from shared.gpu import onnx_providers  # noqa: E402
+
 _SESSION = None
 _INPUT_NAME = None
 
@@ -57,8 +60,7 @@ def _load_session():
     from huggingface_hub import hf_hub_download
     repo = os.environ.get("RMBG_REPO", "briaai/RMBG-1.4")
     model_path = hf_hub_download(repo, "onnx/model_fp16.onnx")
-    providers = ["CoreMLExecutionProvider", "CPUExecutionProvider"]
-    _SESSION = ort.InferenceSession(model_path, providers=providers)
+    _SESSION = ort.InferenceSession(model_path, providers=onnx_providers())
     _INPUT_NAME = _SESSION.get_inputs()[0].name
     return _SESSION
 

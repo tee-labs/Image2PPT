@@ -146,6 +146,33 @@ python scripts/build_deck.py \
 
 If `build_deck.py` reports uncertain OCR entries, open `ocr/page_NN.ocr_review.annotated.png` to inspect the highlighted text, edit `corrected_text` in the corresponding `ocr_review.json`, then rerun the last two steps. By default, when `--skip-render` is not used, `build_deck.py` first renders text-only calibration previews to adjust font sizes, then runs multiple passes to adjust text box positions.
 
+## GPU Acceleration (automatic)
+
+The hot loop is PaddleOCR (PP-OCRv5) plus the optional PaddleX table model
+and ONNX RMBG. `bootstrap.sh` auto-detects: if `nvidia-smi` is on PATH and
+reports a device, it installs the CUDA wheels (`paddlepaddle-gpu` +
+`onnxruntime-gpu`); otherwise it installs the CPU wheels. The runtime code
+also auto-detects, so you don't need any extra flag to actually use the GPU.
+
+```bash
+bash scripts/bootstrap.sh          # auto GPU or CPU
+bash scripts/bootstrap.sh --cpu    # force CPU wheels even with a GPU present
+```
+
+To temporarily flip between GPU and CPU at run time (debugging,
+benchmarking), set an env var:
+
+```bash
+DECKWEAVER_DEVICE=cpu  python scripts/convert.py --source ...   # force CPU
+DECKWEAVER_DEVICE=gpu  python scripts/convert.py --source ...   # force-request GPU
+DECKWEAVER_DEVICE=auto python scripts/convert.py --source ...   # default
+```
+
+Note: on macOS (including Apple Silicon) only the ONNX CoreML path is kept;
+PaddlePaddle has no upstream MPS backend, so requesting GPU there falls
+back to CPU. EasyOCR's MPS path stays off by default — it warns on every
+load and the speedup on tiny per-line crops is negligible.
+
 ## Common Options
 
 ```bash
