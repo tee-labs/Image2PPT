@@ -40,6 +40,10 @@ class Settings(BaseSettings):
     # Worker
     python_bin: str = "python3"
     convert_script: Path = REPO_ROOT / "scripts" / "convert.py"
+    # Run EasyOCR + Tesseract cross-verification against PaddleOCR.
+    # Defaults to off because EasyOCR pulls in torch (~1 GB of CUDA
+    # wheels). Set to true only when both are installed.
+    cross_verify: bool = False
 
     # GitHub auto-update — OFF by default. Enabling pulls remote code
     # and re-execs the server, so a compromised upstream becomes RCE.

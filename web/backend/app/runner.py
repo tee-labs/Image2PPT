@@ -38,7 +38,13 @@ async def run_convert(
         str(s.convert_script),
         "--source", str(source),
         "--work-dir", str(work_dir),
+        # EasyOCR + Tesseract are optional cross-verifiers; skipping
+        # them keeps the prod install (and the sandbox) lean. Set
+        # DECKWEAVER_CROSS_VERIFY=true if you've installed them and
+        # want belt-and-suspenders OCR confidence.
     ]
+    if not s.cross_verify:
+        cmd.append("--skip-cross-verify")
     if mode != "full":
         cmd += ["--mode", mode]
 
