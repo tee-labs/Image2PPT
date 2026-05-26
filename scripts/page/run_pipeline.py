@@ -887,7 +887,7 @@ def process_page(num: str, src_dir: Path, work: Path,
 def process_page_simple(num: str, src_dir: Path, work: Path) -> dict:
     """Erase text only, then emit a minimal background+text-overlay layout.
 
-    Used by build_deck's `--mode background-only`. Skips inventory and
+    Used by build_deck's `--mode text-only`. Skips inventory and
     inventory_to_layout entirely. The cleaned PNG becomes a full-slide
     background image; OCR items become editable text boxes on top.
     """

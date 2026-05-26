@@ -101,6 +101,12 @@ def parse_args() -> argparse.Namespace:
         "--pdf-dpi", type=int, default=300,
         help="Render DPI when --source is a .pdf (default 300).",
     )
+    p.add_argument(
+        "--mode", choices=["full", "text-only"], default="full",
+        help="full (default): full pipeline with vector icon extraction. "
+             "text-only: cleaned page becomes a background image with "
+             "editable OCR text on top (faster, no icon extraction).",
+    )
     return p.parse_args()
 
 
@@ -244,6 +250,8 @@ def main() -> int:
                       str(args.calibration_max_shift)]
     if args.workers != 0:
         build_cmd += ["--workers", str(args.workers)]
+    if args.mode != "full":
+        build_cmd += ["--mode", args.mode]
 
     if pdf_mode:
         # PDF text layer is already exact; skip OCR + review-apply.

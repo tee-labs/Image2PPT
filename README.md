@@ -152,29 +152,36 @@ python scripts/build_deck.py \
 如果 `build_deck.py` 提示有 OCR 不确定项，可以打开 `ocr/page_NN.ocr_review.annotated.png` 检查高亮文字，修改对应 `ocr_review.json` 的 `corrected_text` 后重新运行后两步。
 默认情况下，只要没有使用 `--skip-render`，`build_deck.py` 会先渲染文字校准预览来校准字号，再多轮渲染校准文本框位置。
 
-## GPU 加速（自动）
+### 方式三：作为 Web 前后端服务部署
 
-主要的推理瓶颈在 PaddleOCR (PP-OCRv5) 和可选的 PaddleX 表格识别、ONNX RMBG。
-`bootstrap.sh` 会自行检测：发现 `nvidia-smi` 并且能列出设备就装 GPU 版本依赖
-（`paddlepaddle-gpu` + `onnxruntime-gpu`），否则装 CPU 版。运行时代码也是
-auto 检测，能用 GPU 就用 GPU，无需任何额外开关。
+适合以下几类用户：
 
-```bash
-bash scripts/bootstrap.sh          # 自动选 GPU 或 CPU
-bash scripts/bootstrap.sh --cpu    # 有显卡也强制装 CPU 版
-```
+- 想给团队/朋友提供一个浏览器界面，不希望每个人都自己装环境
+- 需要账号密码鉴权、任务排队、历史记录、ETA 等基本服务化能力
+- 希望服务能自动跟随 GitHub 更新（可选）
 
-需要临时关掉/打开 GPU 时（比如调试或对比性能），可以加一个环境变量：
+Web 层是**完全独立的额外入口**，不影响方式一、二的任何用法：不启动 web 层时 CLI 行为完全一致。所有运行时状态（SQLite、上传、产物）都写在 `web/data/` 下，已加入 `.gitignore`。
+
+依赖也是**分开声明**的：CLI 用户只装 `requirements.txt`，永远不会装到 `fastapi` / `uvicorn` 等 web 层依赖；要部署 web 时再单独装 `web/backend/requirements.txt`。`start.sh` 会自动帮你装这一份。
 
 ```bash
-DECKWEAVER_DEVICE=cpu  python scripts/convert.py --source ...   # 强制 CPU
-DECKWEAVER_DEVICE=gpu  python scripts/convert.py --source ...   # 强制请求 GPU
-DECKWEAVER_DEVICE=auto python scripts/convert.py --source ...   # 默认
+git clone https://github.com/GuopengLin/Image2PPT.git
+cd Image2PPT
+bash scripts/bootstrap.sh                  # CLI 依赖（PaddleOCR、LibreOffice、…）
+cp web/.env.example web/.env               # 至少改 ADMIN_PASSWORD 和 JWT_SECRET
+bash web/start.sh                          # 自动装 web 层依赖，再起 uvicorn :8000 + vite :5173
 ```
 
-注意：macOS（含 Apple Silicon）目前只保留 ONNX 的 CoreML 加速；PaddlePaddle
-官方没有 MPS 后端，强切 GPU 会直接回落 CPU。EasyOCR 的 MPS 路径默认关闭，
-因为每次加载都会刷警告且对小裁剪框速度提升不明显。
+打开 `http://localhost:5173`，用 `web/.env` 里设置的账号密码登录，即可上传图片 / PDF / 图片 zip，选择「完整模式」或「仅文字模式」，提交后在任务列表里看进度、ETA、下载产物，或删除历史记录。顶栏会显示当前 commit、与 `main` 的差距，并在配置 `DECKWEAVER_AUTO_UPDATE=true` 时自动拉取新版重启。
+
+生产部署（前端编译进静态文件，单端口直接由 uvicorn 提供）：
+
+```bash
+bash web/start-prod.sh                     # 默认监听 0.0.0.0:8000
+PORT=9000 bash web/start-prod.sh
+```
+
+更多 API 细节、ETA 公式、自动更新流程、用户管理 CLI（`web/backend/manage.py`）等说明见 [web/README.md](web/README.md)。
 
 ## 常用参数
 

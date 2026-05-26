@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """Simple per-page layout generator: full-page background + OCR text overlays.
 
-Used by the "background-only" build_deck mode. Skips the full icon /
+Used by the "text-only" build_deck mode. Skips the full icon /
 inventory extraction stack and instead emits a minimal layout JSON:
 
     1) One background image element (the text-erased clean.png) sized

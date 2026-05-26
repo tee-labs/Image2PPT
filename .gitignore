@@ -34,3 +34,10 @@ __pycache__/
 
 # Rendered QA intermediates
 *.pdf
+
+# Web layer runtime state (uploads, outputs, SQLite, logs)
+web/data/
+web/.env
+web/backend/.venv/
+web/frontend/node_modules/
+web/frontend/dist/

@@ -101,11 +101,11 @@ def parse_args() -> argparse.Namespace:
                    help="Parallel workers for stage 1 per-page processing. "
                         "0 = auto (min(physical_cpu, n_pages, 8)). "
                         "1 = serial (in-process, no fork).")
-    p.add_argument("--mode", choices=["full", "background-only"],
+    p.add_argument("--mode", choices=["full", "text-only"],
                    default="full",
                    help="full (default): erase + inventory + icon "
                         "extraction → editable PPT with vector icons. "
-                        "background-only: erase only; the cleaned page "
+                        "text-only: erase only; the cleaned page "
                         "image becomes one full-slide background and "
                         "OCR text is laid on top as editable text boxes. "
                         "Skips inventory, icon extraction, slot "
@@ -138,7 +138,7 @@ def _process_page_worker(payload: dict) -> dict:
     """
     num = payload["num"]
     t = time.time()
-    if payload.get("mode") == "background-only":
+    if payload.get("mode") == "text-only":
         result = rp.process_page_simple(
             num, Path(payload["src"]), Path(payload["work"]),
         )
@@ -157,7 +157,7 @@ def _process_page_worker(payload: dict) -> dict:
 # Stage names in pipeline order. Used to decide whether --stop-after
 # halts before / after a given stage, and to drive the --interactive
 # prompt. Stages not present in a particular mode (e.g. classify and
-# calibrate in background-only) are simply skipped without affecting
+# calibrate in text-only) are simply skipped without affecting
 # the ordering.
 _STAGE_ORDER = ["erase", "layout", "combine", "classify",
                 "calibrate", "build", "qa", "render"]
@@ -229,9 +229,9 @@ def main() -> int:
     layouts_dir.mkdir(parents=True, exist_ok=True)
 
     t_total = time.time()
-    simple_mode = args.mode == "background-only"
+    simple_mode = args.mode == "text-only"
     if simple_mode:
-        print("  mode: background-only (full-page background + editable text)")
+        print("  mode: text-only (full-page background + editable text)")
 
     # ---- Stage 1: run_pipeline ----
     nums: list[str] = []
@@ -344,11 +344,11 @@ def main() -> int:
         return 0
 
     # ---- Stage 2b: structural text-slot classes ----
-    # In background-only mode the editable text is laid out from raw OCR
+    # In text-only mode the editable text is laid out from raw OCR
     # bboxes with no structural grouping, so style-class clustering has
     # nothing meaningful to merge — skip it.
     if simple_mode:
-        banner("2b/5  classify_text_slots SKIPPED (background-only mode)")
+        banner("2b/5  classify_text_slots SKIPPED (text-only mode)")
     else:
         banner("2b/5  classify_text_slots")
         ts = time.time()
@@ -373,7 +373,7 @@ def main() -> int:
         if not _interactive_gate(args, "classify", artifacts=[slot_report]):
             return 0
 
-    # In background-only mode the cleaned PNG already carries the
+    # In text-only mode the cleaned PNG already carries the
     # original glyphs visually, so even if our overlay sizing is off
     # by a few points it doesn't move ink underneath. Calibration is
     # expensive (re-renders PPTX → PDF → PNG twice) and only refines
