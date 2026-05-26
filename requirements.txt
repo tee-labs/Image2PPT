@@ -8,3 +8,4 @@ easyocr
 pytesseract
 onnxruntime
 huggingface_hub
+pymupdf

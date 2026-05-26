@@ -97,6 +97,10 @@ def parse_args() -> argparse.Namespace:
         "--workers", type=int, default=0,
         help="Parallel workers for per-page processing (0 = auto, 1 = serial).",
     )
+    p.add_argument(
+        "--pdf-dpi", type=int, default=300,
+        help="Render DPI when --source is a .pdf (default 300).",
+    )
     return p.parse_args()
 
 
@@ -176,7 +180,21 @@ def main() -> int:
     source = Path(args.source).expanduser()
     work = Path(args.work_dir).expanduser() if args.work_dir else default_work_dir(source, args.name)
     work.mkdir(parents=True, exist_ok=True)
-    source_dir = prepare_source(source, work)
+
+    pdf_mode = source.is_file() and source.suffix.lower() == ".pdf"
+    if pdf_mode:
+        ingest_cmd = [
+            sys.executable, str(SCRIPTS_ROOT / "ocr" / "pdf_ingest.py"),
+            "--pdf", str(source),
+            "--work-dir", str(work),
+            "--dpi", str(args.pdf_dpi),
+        ]
+        if args.pages:
+            ingest_cmd += ["--pages", args.pages]
+        run(ingest_cmd)
+        source_dir = work / "source"
+    else:
+        source_dir = prepare_source(source, work)
 
     prepare_cmd = [
         sys.executable, str(SCRIPTS_ROOT / "ocr" / "prepare_ocr.py"),
@@ -227,9 +245,13 @@ def main() -> int:
     if args.workers != 0:
         build_cmd += ["--workers", str(args.workers)]
 
-    run(prepare_cmd)
-    run(apply_cmd)
-    run(build_cmd)
+    if pdf_mode:
+        # PDF text layer is already exact; skip OCR + review-apply.
+        run(build_cmd)
+    else:
+        run(prepare_cmd)
+        run(apply_cmd)
+        run(build_cmd)
 
     print("\nDone.")
     print(f"  PPTX:     {work / 'slides.pptx'}")

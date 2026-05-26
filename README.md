@@ -12,6 +12,7 @@
   <img alt="Local OCR" src="https://img.shields.io/badge/OCR-Local-16a34a?style=flat-square">
   <img alt="No cloud API" src="https://img.shields.io/badge/Cloud%20API-Not%20required-0ea5e9?style=flat-square">
   <img alt="Bitmap formats" src="https://img.shields.io/badge/Bitmap-PNG%20%7C%20JPG%20%7C%20WebP%20%7C%20TIFF-f59e0b?style=flat-square">
+  <img alt="PDF input" src="https://img.shields.io/badge/Input-PDF-DC2626?style=flat-square&logo=adobeacrobatreader&logoColor=white">
 </p>
 
 DeckWeaver 可以把 GPT、Gemini等输出的图片重建为可编辑的 PowerPoint 文件。它可以作为Agent的Skill使用，或者直接作为一个无大模型介入的命令行工具。
@@ -25,6 +26,7 @@ DeckWeaver 可以把 GPT、Gemini等输出的图片重建为可编辑的 PowerPo
 - 生成速度快：批量 OCR 复用热模型，后续页面流水线自动完成。
 - 无需额外云端 API：OCR、图像分割、PPTX 生成和预览检查都在本地运行。
 - 支持常见位图输入：PNG、JPG/JPEG、WebP、BMP、TIF/TIFF。
+- 支持 PDF 输入：直接读取 PDF 文字层，跳过 OCR，文字 100% 还原（详见下文）。
 
 ## 效果示例
 
@@ -107,6 +109,16 @@ python scripts/convert.py --source /path/to/slides
 python scripts/convert.py --source /path/to/page_01.png
 ```
 
+或者直接传一份 PDF，每一页 PDF 会对应输出 PPT 的一页：
+
+```bash
+python scripts/convert.py --source /path/to/deck.pdf
+# 调整渲染清晰度（默认 300 DPI）
+python scripts/convert.py --source /path/to/deck.pdf --pdf-dpi 200
+```
+
+PDF 模式会用 PyMuPDF 直接抽取 PDF 文字层（exact Unicode + 每字 bbox，confidence=1.0），跳过 OCR 流程，文字与原文 100% 一致；同时把每页栅格化成 PNG 供后续 erase / inventory / 布局校准复用。若 PDF 是纯扫描件（无文字层），建议先把它转成图片文件夹再走图片输入路径。
+
 生成结果会在：
 
 ```text
@@ -160,6 +172,7 @@ python scripts/build_deck.py --icon-review ...
 - `--calibration-iterations 4`：设置文本位置校准迭代次数。
 - `--detect-tables`：尝试把规则表格还原为 PPT 原生表格。
 - `--icon-review` / `--icon-decisions`：导出图标/文字边界判断包，便于人工复核。
+- `--pdf-dpi 300`：PDF 输入时的渲染清晰度，默认 300；页数多或对体积敏感时可降到 200。
 
 ## 项目结构
 
@@ -168,7 +181,7 @@ python scripts/build_deck.py --icon-review ...
 ├── assets/            # Logo 等项目资源
 ├── scripts/
 │   ├── convert.py    # 一键转换入口
-│   ├── ocr/          # OCR、交叉验证、复核应用
+│   ├── ocr/          # OCR、交叉验证、复核应用、PDF 文字层抽取
 │   ├── page/         # 单页擦除文字、检测元素、生成布局
 │   ├── deck/         # 合并布局并生成 PPTX
 │   ├── verify/       # PPTX 检查与预览渲染
@@ -181,7 +194,7 @@ python scripts/build_deck.py --icon-review ...
 
 ## 注意事项
 
-- 一键入口支持单张图片或图片文件夹；如果图片没有按 `page_NN.<ext>` 命名，会自动复制到运行目录并按页码编号。
+- 一键入口支持单张图片、图片文件夹或 PDF 文件；图片没有按 `page_NN.<ext>` 命名时会自动复制到运行目录并按页码编号；PDF 输入则由 `scripts/ocr/pdf_ingest.py` 直接渲染并抽取文字层。
 - 多页 PPT 最好保持一致比例；PowerPoint 一个文件只能有一种页面尺寸。
 - 复杂图表目前会优先作为可移动图片对象保留，而不是还原为可编辑数据图表。
 - 生成文件默认写入 `output/`，该目录不会提交到 Git。
