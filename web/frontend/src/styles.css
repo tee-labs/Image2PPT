@@ -34,9 +34,9 @@
 
   --row-pad-y:     14px;
   --section-gap:   18px;
-  --card-pad:      22px;
+  --card-pad:      28px;
 
-  --sidebar-w:     224px;
+  --sidebar-w:     280px;
 }
 
 :root[data-theme="dark"] {
@@ -128,31 +128,37 @@ body {
 .sidebar {
   background: var(--panel);
   border-right: 1px solid var(--border);
-  padding: 18px 14px;
-  display: flex; flex-direction: column; gap: 6px;
+  padding: 22px 18px;
+  display: flex; flex-direction: column; gap: 8px;
   position: sticky; top: 0; height: 100vh;
   overflow-y: auto;
 }
 .sidebar .brand {
-  display: flex; align-items: center; gap: 10px;
-  padding: 4px 8px 16px;
-  margin-bottom: 6px;
+  display: flex; align-items: center; gap: 12px;
+  padding: 4px 8px 18px;
+  margin-bottom: 8px;
   border-bottom: 1px solid var(--border);
   font-weight: 600; letter-spacing: -0.01em;
+  font-size: 17px;
+}
+.sidebar .brand-logo {
+  width: 36px; height: 36px;
+  object-fit: contain;
+  flex-shrink: 0;
 }
 .sidebar .nav-group {
-  font: 600 10.5px/1 "Geist Mono", ui-monospace, monospace;
+  font: 600 11px/1 "Geist Mono", ui-monospace, monospace;
   text-transform: uppercase; letter-spacing: 0.1em;
   color: var(--faint);
-  padding: 14px 10px 6px;
+  padding: 16px 10px 8px;
 }
 .nav-item {
-  display: flex; align-items: center; gap: 10px;
-  padding: 8px 10px;
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 12px;
   border-radius: var(--radius-sm);
   color: var(--text-2);
   cursor: pointer;
-  font-size: 13.5px;
+  font-size: 14.5px;
   border: 1px solid transparent;
   transition: background 120ms, color 120ms, border-color 120ms;
   text-decoration: none;
@@ -166,7 +172,7 @@ body {
   font-weight: 500;
 }
 .nav-item .nav-icon {
-  width: 18px; height: 18px;
+  width: 20px; height: 20px;
   display: grid; place-items: center;
   color: currentColor;
   flex-shrink: 0;
@@ -306,7 +312,7 @@ body {
 
 /* ---------- Main ---------- */
 .main {
-  flex: 1; padding: 28px 28px 80px; max-width: 1180px; margin: 0 auto;
+  flex: 1; padding: 32px 40px 80px; max-width: 1440px; margin: 0 auto;
   width: 100%; display: flex; flex-direction: column; gap: var(--section-gap);
 }
 
@@ -352,7 +358,7 @@ body {
 
 /* ---------- Upload ---------- */
 .upload {
-  display: grid; grid-template-columns: 1fr 280px; gap: 22px;
+  display: grid; grid-template-columns: 1fr 320px; gap: 26px;
   align-items: stretch;
 }
 @media (max-width: 760px) {
@@ -367,10 +373,10 @@ body {
       transparent 0 12px,
       color-mix(in oklch, var(--panel-2) 60%, transparent) 12px 13px);
   border-radius: var(--radius);
-  padding: 32px 24px;
+  padding: 44px 28px;
   cursor: pointer;
   transition: background 140ms, border-color 140ms;
-  min-height: 200px;
+  min-height: 260px;
   display: flex; flex-direction: column; justify-content: center;
 }
 .dropzone:hover { border-color: var(--accent); background: var(--accent-soft); }
@@ -696,6 +702,12 @@ body {
   padding: 32px;
   box-shadow: 0 30px 80px -40px rgb(0 0 0 / 0.6),
               0 1px 0 rgb(255 255 255 / 0.03) inset;
+}
+.login-card .login-logo {
+  display: block;
+  width: 96px; height: auto;
+  margin: 0 0 14px;
+  object-fit: contain;
 }
 .login-card h1 {
   margin: 0 0 4px; font-size: 22px; font-weight: 600;

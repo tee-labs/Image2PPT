@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { api, auth, type Me } from "../api/client";
 import { Icon } from "../components/icons";
+import logoUrl from "../assets/logo.png";
 
 const REPO_URL = "https://github.com/GuopengLin/Image2PPT";
 
@@ -29,6 +30,7 @@ export default function Login({ onLogin }: { onLogin: (me: Me) => void }) {
   return (
     <div className="login-wrap">
       <form className="login-card" onSubmit={submit}>
+        <img className="login-logo" src={logoUrl} alt="DeckWeaver" />
         <h1>DeckWeaver</h1>
         <div className="sub">把图片或 PDF 转为可编辑 PowerPoint。</div>
 

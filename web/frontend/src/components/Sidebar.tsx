@@ -1,5 +1,6 @@
 import type { Job, Me, VersionInfo } from "../api/client";
 import { Icon } from "./icons";
+import logoUrl from "../assets/logo.png";
 
 export type Page = "new" | "active" | "history" | "system";
 
@@ -61,7 +62,10 @@ export default function Sidebar({
 
   return (
     <aside className="sidebar">
-      <div className="brand">DeckWeaver</div>
+      <div className="brand">
+        <img className="brand-logo" src={logoUrl} alt="DeckWeaver" />
+        <span className="brand-name">DeckWeaver</span>
+      </div>
 
       <div className="nav-group">工作区</div>
       {items.map((it) => (
