@@ -93,4 +93,9 @@ export const api = {
   downloadUrl: (id: string) => `/api/jobs/${id}/download?token=${encodeURIComponent(auth.token || "")}`,
   version: () => req<VersionInfo>("/api/system/version"),
   triggerUpdate: () => req<{ started: boolean }>("/api/system/update", { method: "POST" }),
+  setAutoUpdate: (enabled: boolean) =>
+    req<{ auto_update: boolean }>("/api/system/auto-update", {
+      method: "POST",
+      body: JSON.stringify({ enabled }),
+    }),
 };

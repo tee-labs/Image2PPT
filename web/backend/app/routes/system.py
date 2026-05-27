@@ -4,8 +4,10 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from sqlalchemy.orm import Session
 
+from pydantic import BaseModel
+
 from ..config import get_settings
-from .. import github_sync, sandbox
+from .. import github_sync, runtime_settings, sandbox
 from ..db import SessionLocal
 from ..deps import get_current_user, require_admin
 from ..models import User
@@ -27,12 +29,22 @@ def version(_: User = Depends(get_current_user)) -> VersionOut:
         ahead=snap.get("ahead", 0),
         branch=snap.get("branch", s.git_branch),
         remote_url=s.github_repo_url,
-        auto_update=s.auto_update,
+        auto_update=runtime_settings.get_auto_update(),
         updating=bool(snap.get("updating")),
         last_check=snap.get("last_check"),
         sandbox_backend=sandbox.active_backend(),
         sandbox_allow_network=s.sandbox_allow_network,
     )
+
+
+class AutoUpdateIn(BaseModel):
+    enabled: bool
+
+
+@router.post("/auto-update")
+def set_auto_update(payload: AutoUpdateIn, _: User = Depends(require_admin)):
+    runtime_settings.set_auto_update(payload.enabled)
+    return {"auto_update": runtime_settings.get_auto_update()}
 
 
 @router.post("/update", status_code=202)

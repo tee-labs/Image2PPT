@@ -163,7 +163,14 @@ export default function Dashboard({
     );
   } else if (page === "system") {
     pageContent = (
-      <SystemPage version={version} onUpdate={triggerUpdate} onCheckUpdate={reloadVersion} />
+      <SystemPage
+        version={version}
+        onUpdate={triggerUpdate}
+        onCheckUpdate={reloadVersion}
+        onVersionChange={(patch) =>
+          setVersion((v) => (v ? { ...v, ...patch } : v))
+        }
+      />
     );
   }
 

@@ -18,6 +18,7 @@ from pathlib import Path
 
 from .config import REPO_ROOT, get_settings
 from . import queue as job_queue
+from . import runtime_settings
 from .ws import broker
 
 
@@ -150,7 +151,9 @@ async def poll_loop() -> None:
         try:
             await _refresh_counts()
             await _broadcast_state()
-            if s.auto_update:
+            # Read the runtime override each iteration so admin toggles
+            # take effect on the next poll without a restart.
+            if runtime_settings.get_auto_update():
                 await _try_update()
         except Exception:
             pass

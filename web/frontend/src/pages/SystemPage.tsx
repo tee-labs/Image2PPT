@@ -1,4 +1,5 @@
-import type { VersionInfo } from "../api/client";
+import { useState } from "react";
+import { api, type VersionInfo } from "../api/client";
 import VersionBadge from "../components/VersionBadge";
 import { Icon } from "../components/icons";
 import { fmtTime } from "../utils/format";
@@ -7,11 +8,30 @@ export default function SystemPage({
   version,
   onUpdate,
   onCheckUpdate,
+  onVersionChange,
 }: {
   version: VersionInfo | null;
   onUpdate: () => void;
   onCheckUpdate: () => void;
+  onVersionChange?: (v: Partial<VersionInfo>) => void;
 }) {
+  const [autoBusy, setAutoBusy] = useState(false);
+  const toggleAutoUpdate = async () => {
+    if (!version || autoBusy) return;
+    const next = !version.auto_update;
+    setAutoBusy(true);
+    // Optimistic UI; revert on error.
+    onVersionChange?.({ auto_update: next });
+    try {
+      await api.setAutoUpdate(next);
+    } catch (e) {
+      onVersionChange?.({ auto_update: !next });
+      alert((e as Error).message);
+    } finally {
+      setAutoBusy(false);
+    }
+  };
+
   if (!version) return null;
   const statusText = version.updating
     ? "更新中"
@@ -101,11 +121,24 @@ export default function SystemPage({
         <div className="kv-row">
           <div className="k">自动更新</div>
           <div className="v" style={{ display: "flex", alignItems: "center", gap: 12 }}>
-            <div className={`toggle ${version.auto_update ? "on" : ""}`} role="switch" aria-disabled />
+            <div
+              className={`toggle ${version.auto_update ? "on" : ""} ${autoBusy ? "busy" : ""}`}
+              role="switch"
+              aria-checked={version.auto_update}
+              tabIndex={0}
+              onClick={toggleAutoUpdate}
+              onKeyDown={(e) => {
+                if (e.key === " " || e.key === "Enter") {
+                  e.preventDefault();
+                  toggleAutoUpdate();
+                }
+              }}
+              style={{ cursor: autoBusy ? "wait" : "pointer" }}
+            />
             <span style={{ color: "var(--muted)", fontSize: 12 }}>
               {version.auto_update
                 ? "检测到新版本时自动拉取并热重启服务。"
-                : "需手动触发更新。在 web/.env 修改 DECKWEAVER_AUTO_UPDATE 后重启生效。"}
+                : "需手动触发更新。"}
             </span>
           </div>
         </div>
