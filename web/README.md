@@ -202,14 +202,46 @@ If you're putting this on the open internet, the application layer above is only
    MemoryDenyWriteExecute=false   # paddle/torch JITs need this off
    ```
 6. **Install a sandbox helper.** On Linux: `apt install bubblewrap` (preferred) or `apt install firejail`. `auto` mode picks the best available. On macOS `sandbox-exec` is built in.
-7. **Rate limit at the proxy too.** The in-app login limiter is per-IP and in-memory; if you scale workers or want general API limits, do it in nginx (`limit_req_zone`).
-8. **Restrict outbound network from the sandbox** once your model caches are warm: `DECKWEAVER_SANDBOX_ALLOW_NETWORK=false`. First-run model downloads happen during your manual smoke test, not during user traffic.
-9. **Disk monitoring.** A long-running deploy will accumulate `web/data/outputs/`. The retention sweeper helps. Add a Prometheus / nagios / shell alert on free space.
-10. **Backups.** Just `web/data/deckweaver.db` is enough (jobs are ephemeral, you don't need the outputs).
-11. **No public signup.** The shipped API does not expose a `register` endpoint. Admin creates users via [`web/backend/manage.py`](backend/manage.py) or the admin-gated `POST /api/users`. If you need open signup, you write it; budget for email verification, captcha, and an abuse-handling story.
-12. **Keep deps up to date** — `python3 -m pip list --outdated` and `npm audit` periodically. PaddleOCR, PyMuPDF, LibreOffice have had CVEs historically.
-13. **Logs.** uvicorn access log captures IPs + paths. Rotate it (logrotate or journald). Don't log JWTs or upload contents.
-14. **Image / PDF parsing risk.** The conversion subprocess is sandboxed, but the web process itself opens uploaded PDFs briefly to count pages for ETA (via PyMuPDF). This is a small attack surface — a malformed PDF could in theory exploit PyMuPDF in the web process. Mitigations: PyMuPDF only reads metadata for `page_count`, and the web user has no privileged access. For the truly paranoid, run the whole web service in a container or VM.
+7. **Install CJK fonts that match Microsoft YaHei metrics (Linux).** The PPTX generator hard-codes `Microsoft YaHei` as the font name. The text-size and text-position calibration steps render the layout through LibreOffice; if YaHei is missing, LO falls back to a font with different character widths, calibration locks in wrong sizes, and the final PPTX overflows its boxes when opened on a machine that *does* have YaHei. Fix:
+   ```bash
+   sudo apt install fonts-wqy-microhei fonts-wqy-zenhei fonts-noto-cjk-extra
+   mkdir -p ~/.config/fontconfig/conf.d
+   cat > ~/.config/fontconfig/conf.d/30-yahei.conf <<'XML'
+   <?xml version="1.0"?>
+   <!DOCTYPE fontconfig SYSTEM "fonts.dtd">
+   <fontconfig>
+     <alias binding="strong">
+       <family>Microsoft YaHei</family>
+       <prefer>
+         <family>WenQuanYi Micro Hei</family>
+         <family>Noto Sans CJK SC</family>
+       </prefer>
+     </alias>
+     <alias binding="strong">
+       <family>微软雅黑</family>
+       <prefer><family>WenQuanYi Micro Hei</family></prefer>
+     </alias>
+     <alias binding="strong">
+       <family>PingFang SC</family>
+       <prefer>
+         <family>WenQuanYi Micro Hei</family>
+         <family>Noto Sans CJK SC</family>
+       </prefer>
+     </alias>
+   </fontconfig>
+   XML
+   fc-cache -fv
+   fc-match "Microsoft YaHei"   # should resolve to wqy-microhei.ttc
+   ```
+   WenQuanYi Micro Hei is the open-source font designed to be metric-compatible with YaHei. If you need pixel-perfect fidelity and accept the EULA gray area, copy `msyh.ttc` / `msyhbd.ttc` from a Windows install into `~/.fonts/` instead.
+8. **Rate limit at the proxy too.** The in-app login limiter is per-IP and in-memory; if you scale workers or want general API limits, do it in nginx (`limit_req_zone`).
+9. **Restrict outbound network from the sandbox** once your model caches are warm: `DECKWEAVER_SANDBOX_ALLOW_NETWORK=false`. First-run model downloads happen during your manual smoke test, not during user traffic.
+10. **Disk monitoring.** A long-running deploy will accumulate `web/data/outputs/`. The retention sweeper helps. Add a Prometheus / nagios / shell alert on free space.
+11. **Backups.** Just `web/data/deckweaver.db` is enough (jobs are ephemeral, you don't need the outputs).
+12. **No public signup.** The shipped API does not expose a `register` endpoint. Admin creates users via [`web/backend/manage.py`](backend/manage.py) or the admin-gated `POST /api/users`. If you need open signup, you write it; budget for email verification, captcha, and an abuse-handling story.
+13. **Keep deps up to date** — `python3 -m pip list --outdated` and `npm audit` periodically. PaddleOCR, PyMuPDF, LibreOffice have had CVEs historically.
+14. **Logs.** uvicorn access log captures IPs + paths. Rotate it (logrotate or journald). Don't log JWTs or upload contents.
+15. **Image / PDF parsing risk.** The conversion subprocess is sandboxed, but the web process itself opens uploaded PDFs briefly to count pages for ETA (via PyMuPDF). This is a small attack surface — a malformed PDF could in theory exploit PyMuPDF in the web process. Mitigations: PyMuPDF only reads metadata for `page_count`, and the web user has no privileged access. For the truly paranoid, run the whole web service in a container or VM.
 
 ### Known limits — be honest
 
