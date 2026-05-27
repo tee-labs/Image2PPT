@@ -134,7 +134,8 @@ body {
   overflow-y: auto;
 }
 .sidebar .brand {
-  display: flex; align-items: center; gap: 12px;
+  display: flex; flex-direction: column;
+  align-items: flex-start; gap: 10px;
   padding: 4px 8px 18px;
   margin-bottom: 8px;
   border-bottom: 1px solid var(--border);
@@ -142,7 +143,7 @@ body {
   font-size: 17px;
 }
 .sidebar .brand-logo {
-  width: 36px; height: 36px;
+  width: 44px; height: 44px;
   object-fit: contain;
   flex-shrink: 0;
 }
