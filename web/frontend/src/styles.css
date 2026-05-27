@@ -135,18 +135,20 @@ body {
 }
 .sidebar .brand {
   display: flex; flex-direction: column;
-  align-items: center; gap: 12px;
-  padding: 8px 8px 20px;
-  margin-bottom: 8px;
+  align-items: center; gap: 6px;
+  padding: 0 0 14px;
+  margin-bottom: 6px;
   border-bottom: 1px solid var(--border);
   font-weight: 600; letter-spacing: -0.01em;
   font-size: 18px;
   text-align: center;
 }
 .sidebar .brand-logo {
-  width: 88px; height: 88px;
+  width: 100%; max-width: 200px;
+  height: auto;
   object-fit: contain;
   flex-shrink: 0;
+  display: block;
 }
 .sidebar .nav-group {
   font: 600 11px/1 "Geist Mono", ui-monospace, monospace;
