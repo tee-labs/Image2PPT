@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Iterator
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 
@@ -22,10 +22,16 @@ def get_db() -> Iterator[Session]:
         db.close()
 
 
-def get_current_user(
-    token: str | None = Depends(oauth2_scheme),
+async def get_current_user(
+    request: Request,
     db: Session = Depends(get_db),
 ) -> User:
+    # Bearer header is primary. Fall back to `?token=` so plain
+    # browser-triggered GETs (file downloads, opening a result link
+    # in a new tab) can authenticate without JS attaching headers.
+    token = await oauth2_scheme(request)
+    if not token:
+        token = request.query_params.get("token")
     if not token:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Missing token")
     sub = decode_token(token)
