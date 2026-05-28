@@ -104,10 +104,24 @@ export default function Dashboard({
   };
 
   const onBulkDelete = async (ids: string[]) => {
-    const results = await Promise.allSettled(ids.map((id) => api.deleteJob(id)));
-    const failed = results.filter((r) => r.status === "rejected").length;
-    if (failed > 0) {
-      alert(`${ids.length - failed}/${ids.length} 条删除成功，${failed} 条失败。`);
+    // One round-trip so the server can finish disk cleanup before
+    // dropping each DB row. The server returns per-id status; we only
+    // need to surface failures.
+    try {
+      const res = await api.bulkDeleteJobs(ids);
+      if (res.skipped.length > 0) {
+        const lines = res.skipped
+          .slice(0, 5)
+          .map((s) => `• ${s.id.slice(0, 8)}: ${s.reason}`)
+          .join("\n");
+        alert(
+          `${res.deleted.length}/${ids.length} 条删除成功，${res.skipped.length} 条跳过。\n` +
+            lines +
+            (res.skipped.length > 5 ? `\n…还有 ${res.skipped.length - 5} 条` : ""),
+        );
+      }
+    } catch (e) {
+      alert((e as Error).message);
     }
     reloadJobs();
   };

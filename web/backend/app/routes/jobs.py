@@ -1,14 +1,16 @@
 """Job routes — create, list, get, delete, download, logs."""
 from __future__ import annotations
 
+import logging
 import os
 import shutil
+import time
 import uuid
 import zipfile
 from pathlib import Path
 from typing import Literal
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
@@ -18,7 +20,9 @@ from .. import queue as job_queue
 from .. import github_sync
 from ..eta import estimate_job
 from ..models import Job, User
-from ..schemas import JobLogOut, JobOut
+from ..schemas import BulkDeleteIn, BulkDeleteOut, JobLogOut, JobOut
+
+log = logging.getLogger("deckweaver.jobs")
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 
@@ -368,18 +372,115 @@ def download_job(job_id: str, user: User = Depends(get_current_user), db: Sessio
     )
 
 
+def _terminate_and_wait(job_id: str, *, grace_seconds: float = 5.0) -> None:
+    """Best-effort SIGTERM + brief wait for the worker to flip status.
+    Called by force-delete so the convert subprocess releases its file
+    handles before we rmtree the dirs.
+    """
+    from ..runner import request_cancel, is_running
+    job_queue.mark_cancelled(job_id)
+    request_cancel(job_id)
+    deadline = time.monotonic() + grace_seconds
+    while time.monotonic() < deadline:
+        if not is_running(job_id):
+            return
+        time.sleep(0.1)
+    log.warning("force-delete: convert subprocess for %s did not exit in %ss",
+                job_id, grace_seconds)
+
+
+def _delete_one(db: Session, job: Job, *, force: bool) -> tuple[bool, str | None]:
+    """Try to delete a single job. Returns (deleted_ok, skip_reason).
+
+    Only deletes the DB row when the disk cleanup succeeded. If files
+    can't be removed (busy / perm), keep the row so the next sweep can
+    finish the job — never leave the row gone with files behind.
+    """
+    if job.status == "running":
+        if not force:
+            return False, "running (use force=true to cancel+delete)"
+        _terminate_and_wait(job.id)
+        db.refresh(job)
+    ok = job_queue.cleanup_job_dirs(job)
+    if not ok:
+        # Disk cleanup partially failed — surface a clear error so the
+        # client can retry. Keep the DB row so the orphan sweeper can
+        # finish the cleanup on its next pass.
+        return False, "disk cleanup failed; row kept for sweeper to retry"
+    db.delete(job)
+    return True, None
+
+
 @router.delete("/{job_id}", status_code=204)
-def delete_job(job_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def delete_job(
+    job_id: str,
+    force: bool = Query(False, description="If true, cancel running jobs before deleting"),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     job = db.get(Job, job_id)
     if not job:
         raise HTTPException(404, "Job not found")
     if not user.is_admin and job.owner_id != user.id:
         raise HTTPException(403, "Forbidden")
-    if job.status == "running":
-        raise HTTPException(409, "Cannot delete a running job; cancel it first")
-    job_queue.cleanup_job_dirs(job)
-    db.delete(job)
+    deleted, reason = _delete_one(db, job, force=force)
+    if not deleted:
+        # 409 keeps "running without force" semantics that clients
+        # already expect; 500 covers the disk-cleanup-failed case.
+        code = 409 if reason and "running" in reason else 500
+        raise HTTPException(code, reason or "delete failed")
     db.commit()
+
+
+@router.post("/bulk-delete", response_model=BulkDeleteOut)
+def bulk_delete_jobs(
+    payload: BulkDeleteIn,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> BulkDeleteOut:
+    """Delete multiple jobs in one round-trip, with per-id success/skip
+    reporting. Each id is processed independently — one failure does
+    not abort the others — and only the rows whose disk cleanup
+    succeeds are removed from the DB. This is what the frontend's
+    'clear history' action calls so the server can do file cleanup
+    transactionally per-id instead of relying on N parallel HTTP DELETEs."""
+    deleted: list[str] = []
+    skipped: list[dict] = []
+    freed_bytes = 0
+
+    for jid in payload.ids:
+        job = db.get(Job, jid)
+        if not job:
+            skipped.append({"id": jid, "reason": "not found"})
+            continue
+        if not user.is_admin and job.owner_id != user.id:
+            skipped.append({"id": jid, "reason": "forbidden"})
+            continue
+        # Estimate freed bytes before we rmtree.
+        size = 0
+        for p in (Path(job.upload_dir), Path(job.output_dir)):
+            if p.exists():
+                for f in p.rglob("*"):
+                    try:
+                        if f.is_file():
+                            size += f.stat().st_size
+                    except OSError:
+                        pass
+        ok, reason = _delete_one(db, job, force=payload.force)
+        if ok:
+            deleted.append(jid)
+            freed_bytes += size
+        else:
+            skipped.append({"id": jid, "reason": reason or "delete failed"})
+
+    if deleted:
+        db.commit()
+
+    return BulkDeleteOut(
+        deleted=deleted,
+        skipped=skipped,
+        storage_freed_mb=freed_bytes // (1024 * 1024),
+    )
 
 
 @router.post("/{job_id}/cancel", response_model=JobOut)

@@ -78,6 +78,12 @@ export type PowChallenge = {
   issued_at: number;
 };
 
+export type BulkDeleteResult = {
+  deleted: string[];
+  skipped: { id: string; reason: string }[];
+  storage_freed_mb: number;
+};
+
 export const api = {
   powChallenge: () => req<PowChallenge>("/api/auth/pow"),
   login: (
@@ -100,7 +106,13 @@ export const api = {
     for (const f of files) fd.append("files", f);
     return req<Job>("/api/jobs", { method: "POST", body: fd });
   },
-  deleteJob: (id: string) => req<void>(`/api/jobs/${id}`, { method: "DELETE" }),
+  deleteJob: (id: string, force = false) =>
+    req<void>(`/api/jobs/${id}${force ? "?force=true" : ""}`, { method: "DELETE" }),
+  bulkDeleteJobs: (ids: string[], force = false) =>
+    req<BulkDeleteResult>("/api/jobs/bulk-delete", {
+      method: "POST",
+      body: JSON.stringify({ ids, force }),
+    }),
   cancelJob: (id: string) => req<Job>(`/api/jobs/${id}/cancel`, { method: "POST" }),
   jobLogs: (id: string) => req<{ id: string; log_tail: string }>(`/api/jobs/${id}/logs`),
   downloadUrl: (id: string) => `/api/jobs/${id}/download?token=${encodeURIComponent(auth.token || "")}`,
@@ -111,4 +123,6 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ enabled }),
     }),
+  sweepOrphans: () =>
+    req<{ swept: number }>("/api/system/sweep-orphans", { method: "POST" }),
 };
