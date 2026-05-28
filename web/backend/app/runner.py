@@ -32,10 +32,16 @@ def is_running(job_id: str) -> bool:
     return job_id in _running
 
 
-def request_cancel(job_id: str, *, grace_seconds: float = 3.0) -> bool:
+def request_cancel(job_id: str) -> bool:
     """Try to kill the convert subprocess for `job_id`. Returns True if
     a process was found and signalled. The caller is responsible for
     marking the job 'canceled' in the DB once run_convert returns.
+
+    Safe to call from both sync and async contexts: the call only uses
+    os.killpg / proc.terminate, never schedules tasks. The convert
+    pipeline always reacts to SIGTERM within a few seconds (any in-flight
+    HTTP requests time out at the network layer); the queue worker then
+    observes the cancel flag and finalises status='canceled'.
     """
     proc = _running.get(job_id)
     if proc is None or proc.returncode is not None:
@@ -45,26 +51,31 @@ def request_cancel(job_id: str, *, grace_seconds: float = 3.0) -> bool:
         # We start_new_session via setsid() in preexec, so killing the
         # process group also kills any descendants the converter spawns.
         os.killpg(pid, signal.SIGTERM)
+        return True
     except (ProcessLookupError, PermissionError, OSError):
         try:
             proc.terminate()
+            return True
         except Exception:
             return False
 
-    async def _hard_kill_after_grace() -> None:
-        try:
-            await asyncio.wait_for(proc.wait(), timeout=grace_seconds)
-        except asyncio.TimeoutError:
-            try:
-                os.killpg(pid, signal.SIGKILL)
-            except Exception:
-                try:
-                    proc.kill()
-                except Exception:
-                    pass
 
-    asyncio.create_task(_hard_kill_after_grace())
-    return True
+def force_kill(job_id: str) -> None:
+    """SIGKILL fallback if the SIGTERM grace expires somewhere upstream.
+    Currently not auto-invoked — the queue's proc.wait() blocks until
+    the child actually exits, so SIGTERM is sufficient in practice.
+    Exposed for ops if needed."""
+    proc = _running.get(job_id)
+    if proc is None or proc.returncode is not None:
+        return
+    pid = proc.pid
+    try:
+        os.killpg(pid, signal.SIGKILL)
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
 
 
 async def run_convert(
