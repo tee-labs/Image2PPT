@@ -1,0 +1,38 @@
+{
+  "families": [
+    "Arial",
+    "Calibri",
+    "Cambria",
+    "Times New Roman",
+    "Verdana",
+    "Tahoma",
+    "Consolas",
+    "Aptos",
+    "Corbel",
+    "Helvetica",
+    "Microsoft YaHei",
+    "SimSun",
+    "SimHei",
+    "KaiTi",
+    "FangSong",
+    "Hiragino Sans GB",
+    "STHeiti",
+    "Songti",
+    "Alibaba PuHuiTi",
+    "Noto Sans CJK SC",
+    "Noto Serif CJK SC"
+  ],
+  "img_size": 128,
+  "normalization": {
+    "mean": [
+      0.485,
+      0.456,
+      0.406
+    ],
+    "std": [
+      0.229,
+      0.224,
+      0.225
+    ]
+  }
+}
