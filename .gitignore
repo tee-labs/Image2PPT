@@ -31,6 +31,8 @@ __pycache__/
 *.pt
 *.pth
 *.onnx
+# Exception: ship the font classifier so the pipeline works after clone (~20 MB)
+!models/font_classifier.onnx
 
 # Rendered QA intermediates
 *.pdf
