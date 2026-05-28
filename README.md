@@ -30,7 +30,7 @@ DeckWeaver 可以把 GPT、Gemini等输出的图片重建为可编辑的 PowerPo
 
 ## 效果示例
 
-下图左侧是输入的原图（GPT 生成的隐私计算示意图），右侧是 DeckWeaver 自动重建后的 `.pptx` 经 LibreOffice 渲染回 PNG 的预览。文字全部是可编辑文本框，三大运营商图标、MPC 中心锁、连接线等都拆成了独立可移动 PNG 对象。
+下图左侧是输入的原图（GPT 生成的隐私计算示意图），右侧是 DeckWeaver 自动重建后的 `.pptx` 经 LibreOffice 渲染回 PNG 的预览。文字全部是可编辑文本框，MPC 中心锁、连接线等都拆成了独立可移动 PNG 对象。
 
 <table>
   <tr>
@@ -43,12 +43,6 @@ DeckWeaver 可以把 GPT、Gemini等输出的图片重建为可编辑的 PowerPo
   </tr>
 </table>
 
-复现这一张的命令（耗时约 30 秒，本地 PaddleOCR + LibreOffice）：
-
-```bash
-python scripts/convert.py --source "input/<your_image>.png"
-# → output/<image_stem>_<YYYYMMDD>/slides.pptx
-```
 
 ## 快速开始
 

@@ -30,7 +30,7 @@ Nearly all text in the source image is restored as editable PPT text boxes, whil
 
 ## Example
 
-The image on the left is the input (a GPT-generated privacy-computing diagram); the image on the right is the `.pptx` rebuilt by DeckWeaver, rendered back to PNG via LibreOffice. Every text element is an editable text box, and the three telecom operator icons, the central MPC lock, the connectors, etc. are extracted as independent, movable PNG objects.
+The image on the left is the input (a GPT-generated privacy-computing diagram); the image on the right is the `.pptx` rebuilt by DeckWeaver, rendered back to PNG via LibreOffice. Every text element is an editable text box, and the central MPC lock, the connectors, etc. are extracted as independent, movable PNG objects.
 
 <table>
   <tr>
@@ -43,12 +43,6 @@ The image on the left is the input (a GPT-generated privacy-computing diagram); 
   </tr>
 </table>
 
-Reproduce this example (~30 seconds, local PaddleOCR + LibreOffice):
-
-```bash
-python scripts/convert.py --source "input/<your_image>.png"
-# → output/<image_stem>_<YYYYMMDD>/slides.pptx
-```
 
 ## Quick Start
 
