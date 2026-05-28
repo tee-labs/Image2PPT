@@ -40,18 +40,36 @@
 }
 
 :root[data-theme="dark"] {
-  --bg:            #0a0a0d;
-  --panel:         #111116;
-  --panel-2:       #16161d;
-  --panel-3:       #1c1c25;
-  --border:        #22222c;
-  --border-strong: #2d2d3a;
-  --text:          #ececf1;
-  --text-2:        #b8b8c4;
-  --muted:         #7a7a8c;
-  --faint:         #4a4a5a;
-  --accent-fg:     #0a0a0d;
-  --shadow-card:   0 1px 0 rgb(255 255 255 / 0.02) inset, 0 12px 30px -18px rgb(0 0 0 / 0.6);
+  /* GitHub Primer dark — matches getoken-panel/frontend/styles.css. */
+  --bg:            #0e1117;
+  --panel:         #161b22;
+  --panel-2:       #1c2128;
+  --panel-3:       #22272e;
+  --border:        #2d333b;
+  --border-strong: #444c56;
+  --text:          #c9d1d9;
+  --text-2:        #adbac7;
+  --muted:         #8b949e;
+  --faint:         #6e7681;
+
+  /* Accent: GitHub blue (#2f81f7), expressed as oklch so existing
+     color-mix() callsites keep working. */
+  --accent:        oklch(0.62 0.18 252);
+  --accent-2:      oklch(0.55 0.18 252);
+  --accent-fg:     #ffffff;
+  --accent-soft:   oklch(0.62 0.18 252 / 0.16);
+  --accent-ring:   oklch(0.62 0.18 252 / 0.34);
+
+  /* Status colors lifted from GitHub Primer / getoken's pill scale. */
+  --good:          oklch(0.66 0.18 145);
+  --good-soft:     oklch(0.66 0.18 145 / 0.16);
+  --warn:          oklch(0.70 0.15 75);
+  --warn-soft:     oklch(0.70 0.15 75 / 0.16);
+  --bad:           oklch(0.62 0.20 25);
+  --bad-soft:      oklch(0.62 0.20 25 / 0.16);
+
+  --shadow-card:   0 0 0 1px rgb(255 255 255 / 0.02) inset,
+                   0 8px 24px -16px rgb(0 0 0 / 0.65);
 }
 
 :root[data-density="compact"] {
@@ -65,16 +83,17 @@ html, body, #root { margin: 0; height: 100%; }
 body {
   background: var(--bg);
   color: var(--text);
-  font: 14px/1.55 "Geist", -apple-system, BlinkMacSystemFont, "PingFang SC",
-        "Hiragino Sans GB", "Noto Sans SC", "Microsoft YaHei", sans-serif;
-  font-feature-settings: "ss01", "cv11";
+  /* System / CJK-friendly stack; no external font fetch (CSP-safe). */
+  font: 14px/1.55 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+        "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Noto Sans SC",
+        "Microsoft YaHei", "WenQuanYi Micro Hei", sans-serif;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
 
 .mono {
-  font-family: "Geist Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  font-feature-settings: "ss01", "cv01";
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+               "Liberation Mono", monospace;
 }
 
 /* ---------- Buttons ---------- */
