@@ -29,7 +29,16 @@ from layout.text_sizing import (
     _unify_run_sizes_by_color,
     font_size_pt,
 )
+from layout.font_predict import predict_font_from_bbox
 from layout.text_style import detect_text_style
+
+# When the ML font classifier returns family confidence below this floor we
+# keep the heuristic font instead of trusting a low-confidence guess. The
+# value was picked from the holdout confusion analysis: confident predictions
+# above ~0.6 are >99% correct, low-confidence ones often confuse visually
+# similar pairs (Helvetica/Arial, SimSun/Songti) where the heuristic default
+# is at least as safe.
+_FONT_CONF_THRESHOLD = 0.60
 from layout.text_units import (
     _derive_source_char_boxes,
     _estimated_runs_width_px,
@@ -77,6 +86,7 @@ def _emit_text_element_record(
                               text=raw_text,
                               char_boxes=source_char_boxes,
                               words=wd, word_boxes=wb)
+    font_pred = predict_font_from_bbox(source, [x1, y1, x2, y2], bgr=True)
     apply_run_sizes = _should_apply_run_font_sizes(raw_text)
     if "runs" in style:
         for r in style["runs"]:
@@ -117,6 +127,14 @@ def _emit_text_element_record(
         size = max(int(size), int(mixed_size["base_size"]))
     ppt_font = default_ppt_font()
     text_bold = bool(style["bold"])
+    text_italic = False
+    # ML font classifier (ResNet-34 INT8 ONNX). Only override the heuristic
+    # font/bold/italic when the prediction is confident enough; otherwise the
+    # downstream render_fit + heuristic path stays in charge.
+    if font_pred is not None and font_pred["family_confidence"] >= _FONT_CONF_THRESHOLD:
+        ppt_font = font_pred["family"]
+        text_bold = bool(font_pred["is_bold"])
+        text_italic = bool(font_pred["is_italic"])
     run_sized = any(r.get("size") is not None
                     for r in style.get("runs", []))
     compact_text = "".join(c for c in safe_text if not c.isspace())
@@ -168,7 +186,15 @@ def _emit_text_element_record(
     valign_mode = "middle"
     if render_fit is not None:
         text_x, text_y, text_w, text_h = render_fit["box"]
-        valign_mode = "top"
+        # render_fit picks a tight box around the glyph metrics; with
+        # valign=top in PowerPoint/LibreOffice the ascent line is pinned to
+        # the box top, which makes the rendered text sit ~half the line
+        # leading above where the OCR found it (especially obvious on
+        # short banner-style titles like "① 数据收集"). Center vertically
+        # inside the render_fit box instead — the box height already
+        # tracks the glyph + a small padding, so MIDDLE puts the ink right
+        # back on the source y-axis.
+        valign_mode = "middle"
     elif mixed_size is not None:
         valign_mode = "top"
     text_w = min(int(text_w),
@@ -177,10 +203,18 @@ def _emit_text_element_record(
         "type": "text", "name": el["id"], "text": safe_text,
         "box": [text_x, text_y, text_w, text_h],
         "source_bbox": [int(x1), int(y1), int(x2), int(y2)],
-        "font": ppt_font, "size": int(size), "bold": text_bold,
+        "font": ppt_font, "size": int(size),
+        "bold": text_bold, "italic": text_italic,
         "color": style["color"], "align": align, "valign": valign_mode,
         "line_spacing": 1.0,
     }
+    if font_pred is not None:
+        record["font_pred"] = {
+            "family": font_pred["family"],
+            "family_confidence": font_pred["family_confidence"],
+            "bold_confidence": font_pred["bold_confidence"],
+            "italic_confidence": font_pred["italic_confidence"],
+        }
     if (source_char_boxes is not None
             and len(source_char_boxes) == len(raw_text)
             and len(safe_text) == len(raw_text)):
