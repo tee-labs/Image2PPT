@@ -72,11 +72,23 @@ async function req<T>(path: string, init: RequestInit = {}): Promise<T> {
   return res.json();
 }
 
+export type PowChallenge = {
+  challenge: string;
+  difficulty: number;
+  issued_at: number;
+};
+
 export const api = {
-  login: (username: string, password: string) =>
+  powChallenge: () => req<PowChallenge>("/api/auth/pow"),
+  login: (
+    username: string,
+    password: string,
+    pow_challenge: string,
+    pow_nonce: string,
+  ) =>
     req<{ access_token: string; username: string; is_admin: boolean }>("/api/auth/login", {
       method: "POST",
-      body: JSON.stringify({ username, password }),
+      body: JSON.stringify({ username, password, pow_challenge, pow_nonce }),
     }),
   me: () => req<Me>("/api/auth/me"),
   listJobs: () => req<Job[]>("/api/jobs"),

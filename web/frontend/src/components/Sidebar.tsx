@@ -63,8 +63,8 @@ export default function Sidebar({
   return (
     <aside className="sidebar">
       <div className="brand">
-        <img className="brand-logo" src={logoUrl} alt="DeckWeaver" />
-        <span className="brand-name">DeckWeaver</span>
+        <img className="brand-logo" src={logoUrl} alt="Recta" />
+        <span className="brand-name">Recta</span>
       </div>
 
       <div className="nav-group">工作区</div>
