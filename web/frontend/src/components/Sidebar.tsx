@@ -1,6 +1,5 @@
 import type { Job, Me, VersionInfo } from "../api/client";
 import { Icon } from "./icons";
-import logoUrl from "../assets/logo.png";
 
 export type Page = "new" | "active" | "history" | "system";
 
@@ -62,10 +61,9 @@ export default function Sidebar({
 
   return (
     <aside className="sidebar">
-      <div className="brand">
-        <img className="brand-logo" src={logoUrl} alt="Recta" />
-        <span className="brand-name">Recta</span>
-      </div>
+      <a className="brand" href="/" onClick={(e) => { e.preventDefault(); }}>
+        <span className="brand-name">recta<span className="brand-dot">.</span></span>
+      </a>
 
       <div className="nav-group">工作区</div>
       {items.map((it) => (

@@ -1,8 +1,8 @@
 /** TopBar — sticky toolbar in the top-right corner.
- *  Shows: language toggle, theme toggle, and an optional slot.
- *  Mirrors getoken.tech's "EN" + sun-icon pattern.
+ *  Mirrors getoken.tech's pattern: EN + accent-color swatch + theme.
  */
 import { Icon } from "./icons";
+import AccentPicker from "./AccentPicker";
 import { getLocale, setLocale, getTheme, setTheme, t, useLocale, useTheme } from "../i18n";
 
 export default function TopBar({ extra }: { extra?: React.ReactNode }) {
@@ -23,6 +23,7 @@ export default function TopBar({ extra }: { extra?: React.ReactNode }) {
       >
         <span className="topbar-lang">{t("topbar.toggleLang")}</span>
       </button>
+      <AccentPicker />
       <button
         className="btn icon ghost"
         onClick={() => setTheme(otherTheme)}

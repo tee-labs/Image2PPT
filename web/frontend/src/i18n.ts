@@ -82,6 +82,64 @@ export function useTheme(): Theme {
   );
 }
 
+// Accent palette — getoken-style swatch picker. Five named palettes,
+// each backed by CSS variables under :root[data-accent="<name>"].
+export type Accent = "rose" | "blue" | "amber" | "violet" | "emerald";
+export const ACCENT_ORDER: Accent[] = ["rose", "blue", "amber", "violet", "emerald"];
+const ACCENT_KEY = "recta.accent";
+
+function readAccent(): Accent {
+  const saved = localStorage.getItem(ACCENT_KEY);
+  if (saved && (ACCENT_ORDER as string[]).includes(saved)) return saved as Accent;
+  return "rose";
+}
+
+let _accent: Accent = readAccent();
+const accentSubs = new Set<() => void>();
+
+export function getAccent(): Accent {
+  return _accent;
+}
+
+export function setAccent(a: Accent): void {
+  if (a === _accent) return;
+  _accent = a;
+  localStorage.setItem(ACCENT_KEY, a);
+  document.documentElement.setAttribute("data-accent", a);
+  accentSubs.forEach((cb) => cb());
+}
+
+document.documentElement.setAttribute("data-accent", _accent);
+
+export function useAccent(): Accent {
+  return useSyncExternalStore(
+    (cb) => {
+      accentSubs.add(cb);
+      return () => accentSubs.delete(cb);
+    },
+    () => _accent,
+    () => _accent,
+  );
+}
+
+// Human labels for the swatch tooltip.
+export const ACCENT_LABEL: Record<Accent, string> = {
+  rose: "Rose",
+  blue: "Blue",
+  amber: "Amber",
+  violet: "Violet",
+  emerald: "Emerald",
+};
+
+// Swatch dot color (for the picker chip itself — independent of theme).
+export const ACCENT_SWATCH: Record<Accent, string> = {
+  rose: "#fb7185",
+  blue: "#3b82f6",
+  amber: "#f59e0b",
+  violet: "#8b5cf6",
+  emerald: "#10b981",
+};
+
 // String table. Keep it shallow; add keys as the UI grows. Falls back
 // to the key itself on miss, so missing translations are visible (not
 // silently empty).

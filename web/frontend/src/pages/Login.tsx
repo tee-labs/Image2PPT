@@ -4,7 +4,6 @@ import { Icon } from "../components/icons";
 import TopBar from "../components/TopBar";
 import { t, useLocale } from "../i18n";
 import { solvePow } from "../utils/pow";
-import logoUrl from "../assets/logo.png";
 
 const REPO_URL = "https://github.com/shenhao-stu/Image2PPT";
 
@@ -100,11 +99,10 @@ export default function Login({ onLogin }: { onLogin: (me: Me) => void }) {
       <div className="login-card-wrap">
         <form className="login-card" onSubmit={submit}>
           <div className="login-brand-row">
-            <img className="login-logo" src={logoUrl} alt="Recta" />
-            <div>
-              <h1 className="login-wordmark">Recta</h1>
-              <div className="login-sub">{t("brand.tagline")}</div>
-            </div>
+            <h1 className="login-wordmark">
+              recta<span className="brand-dot">.</span>
+            </h1>
+            <div className="login-sub">{t("brand.tagline")}</div>
           </div>
 
           <label className="field">

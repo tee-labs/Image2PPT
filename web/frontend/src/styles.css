@@ -79,15 +79,49 @@
 
   --sidebar-w:     268px;
 
-  /* Type families */
-  --font-display:  "Instrument Serif", "Source Han Serif SC", "Songti SC",
-                   "STSong", serif;
-  --font-sans:     "Geist", ui-sans-serif, system-ui, -apple-system,
+  /* Type families — Inter for body+display (matches getoken.tech).
+     JetBrains Mono for code, IDs and numeric badges. */
+  --font-sans:     "Inter", ui-sans-serif, system-ui, -apple-system,
                    "Segoe UI", "PingFang SC", "Hiragino Sans GB",
                    "Noto Sans SC", "Microsoft YaHei",
                    "WenQuanYi Micro Hei", sans-serif;
+  --font-display:  var(--font-sans);
   --font-mono:     "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono",
                    Menlo, Consolas, monospace;
+}
+
+/* ---------- Accent palettes ----------
+   data-accent on <html> swaps four tokens. Default (rose) is also the
+   :root fallback above so no-attribute renders the same as accent=rose. */
+:root[data-accent="rose"]    {
+  --accent: oklch(0.74 0.16 18);
+  --accent-2: oklch(0.62 0.18 22);
+  --accent-soft: oklch(0.74 0.16 18 / 0.14);
+  --accent-ring: oklch(0.74 0.16 18 / 0.34);
+}
+:root[data-accent="blue"]    {
+  --accent: oklch(0.66 0.18 252);
+  --accent-2: oklch(0.55 0.19 252);
+  --accent-soft: oklch(0.66 0.18 252 / 0.16);
+  --accent-ring: oklch(0.66 0.18 252 / 0.34);
+}
+:root[data-accent="amber"]   {
+  --accent: oklch(0.78 0.16 72);
+  --accent-2: oklch(0.66 0.18 60);
+  --accent-soft: oklch(0.78 0.16 72 / 0.16);
+  --accent-ring: oklch(0.78 0.16 72 / 0.34);
+}
+:root[data-accent="violet"]  {
+  --accent: oklch(0.65 0.20 295);
+  --accent-2: oklch(0.55 0.22 295);
+  --accent-soft: oklch(0.65 0.20 295 / 0.16);
+  --accent-ring: oklch(0.65 0.20 295 / 0.34);
+}
+:root[data-accent="emerald"] {
+  --accent: oklch(0.72 0.16 165);
+  --accent-2: oklch(0.60 0.16 165);
+  --accent-soft: oklch(0.72 0.16 165 / 0.16);
+  --accent-ring: oklch(0.72 0.16 165 / 0.34);
 }
 
 :root[data-density="compact"] {
@@ -125,23 +159,88 @@ body {
   z-index: 0; pointer-events: none;
   background:
     radial-gradient(closest-side,
-      oklch(0.62 0.20 22 / 0.18),
-      oklch(0.50 0.15 28 / 0.08) 60%,
+      color-mix(in oklch, var(--accent) 22%, transparent),
+      color-mix(in oklch, var(--accent-2) 10%, transparent) 60%,
       transparent 80%);
   filter: blur(8px);
+  transition: background 360ms ease;
 }
 
 /* Push the app shell above the bg layers */
 #root { position: relative; z-index: 1; }
 
 .mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
-.serif { font-family: var(--font-display); letter-spacing: 0.005em; }
 
-/* H1 / hero — Instrument Serif gives this app its editorial signature
-   while Geist handles everything else with refined neutrality. */
-h1, h2, h3 { color: var(--text); }
-h1 { font-family: var(--font-display); font-weight: 400; letter-spacing: -0.02em; }
-h2 { letter-spacing: -0.01em; }
+/* Headings: tight tracking, Inter 600/700. The brand wordmark uses
+   `.brand-name` / `.login-wordmark` for finer-grained control. */
+h1, h2, h3 { color: var(--text); margin: 0; }
+h1 { font-weight: 700; letter-spacing: -0.022em; }
+h2 { font-weight: 600; letter-spacing: -0.014em; }
+h3 { font-weight: 600; letter-spacing: -0.008em; }
+
+/* Wordmark: lowercase Inter 700, tightened, with a colored period.
+   Used in the sidebar brand area and on the login screen. */
+.brand-name {
+  display: inline-flex;
+  align-items: baseline;
+  font-family: var(--font-sans);
+  font-weight: 700;
+  font-size: 18px;
+  letter-spacing: -0.03em;
+  color: var(--text);
+  font-feature-settings: "ss01";
+}
+.brand-dot {
+  color: var(--accent);
+  margin-left: 1px;
+  font-weight: 800;
+}
+
+/* ---------- Accent picker (chip + popover) ---------- */
+.accent-picker { position: relative; display: inline-flex; }
+.accent-btn { padding: 0; width: 30px; height: 30px; }
+.accent-swatch {
+  display: inline-block;
+  width: 14px; height: 14px;
+  border-radius: 999px;
+  box-shadow: 0 0 0 1.5px var(--bg) inset,
+              0 0 0 2px color-mix(in oklch, currentColor 20%, transparent);
+}
+.accent-pop {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 30;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 140px;
+  box-shadow: 0 18px 50px -28px rgb(0 0 0 / 0.65);
+}
+.accent-pop-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  cursor: pointer;
+  border-radius: 6px;
+  text-align: left;
+  font: 13px/1.2 var(--font-sans);
+}
+.accent-pop-item:hover { background: var(--panel-2); }
+.accent-pop-item.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.accent-pop-label { flex: 1; }
+
 
 /* ---------- TopBar ---------- */
 .topbar {
@@ -199,27 +298,33 @@ h2 { letter-spacing: -0.01em; }
 }
 .login-brand-row {
   display: flex;
-  align-items: center;
-  gap: 14px;
-  margin: 0 0 6px;
-}
-.login-logo {
-  width: 48px; height: 48px;
-  border-radius: 10px;
-  object-fit: cover;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 0 0 14px;
 }
 .login-wordmark {
-  font-family: var(--font-display);
-  font-weight: 400;
-  font-size: 36px;
-  letter-spacing: -0.02em;
+  font-family: var(--font-sans);
+  font-weight: 700;
+  font-size: 44px;
+  letter-spacing: -0.04em;
   line-height: 1;
   margin: 0;
+  color: var(--text);
+  display: inline-flex;
+  align-items: baseline;
+}
+.login-wordmark .brand-dot {
+  font-weight: 800;
+  margin-left: 2px;
+  /* Slightly larger relative to wordmark size for a crisp punctuation tick. */
+  font-size: 0.9em;
 }
 .login-sub {
-  font-size: 12.5px;
+  font-size: 13.5px;
   color: var(--muted);
-  margin-top: 4px;
+  margin-top: 2px;
+  letter-spacing: -0.01em;
 }
 .login-card .field {
   display: flex;
@@ -329,19 +434,19 @@ h2 { letter-spacing: -0.01em; }
 
 /* ---------- Inputs ---------- */
 .input {
-  background: var(--panel-2);
+  background: var(--panel);
   color: var(--text);
   border: 1px solid var(--border);
-  padding: 9px 12px;
+  padding: 10px 12px;
   border-radius: var(--radius-sm);
-  font: inherit;
-  font-family: inherit;
+  font: 14px/1.4 var(--font-sans);
   width: 100%;
   outline: none;
   transition: border-color 120ms, box-shadow 120ms;
 }
+.input:hover { border-color: var(--border-strong); }
 .input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-ring); }
-.input::placeholder { color: var(--faint); }
+.input::placeholder { color: var(--faint); letter-spacing: 0.04em; }
 
 /* ---------- App shell ---------- */
 .app { min-height: 100vh; display: grid; grid-template-columns: var(--sidebar-w) 1fr; }
