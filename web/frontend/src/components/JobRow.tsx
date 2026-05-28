@@ -14,11 +14,13 @@ export default function JobRow({
   job,
   onDelete,
   onCancel,
+  onRetry,
   showDuration,
 }: {
   job: Job;
   onDelete: (id: string) => void;
   onCancel?: (id: string) => void;
+  onRetry?: (id: string) => void;
   showDuration: boolean;
 }) {
   const kind = kindFromSource(job.source_kind);
@@ -98,6 +100,15 @@ export default function JobRow({
               <Icon.Download /> 下载
             </button>
           </a>
+        )}
+        {(job.status === "failed" || job.status === "canceled") && onRetry && (
+          <button
+            className="btn sm"
+            onClick={() => onRetry(job.id)}
+            title="使用原文件重新转换"
+          >
+            <Icon.Refresh /> 重试
+          </button>
         )}
         {(job.status === "running" || job.status === "queued") && onCancel && (
           <button

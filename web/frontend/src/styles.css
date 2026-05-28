@@ -928,7 +928,13 @@ h3 { font-weight: 600; letter-spacing: -0.008em; }
 .status.failed .sdot { background: var(--bad); }
 .status.canceled { color: var(--muted); }
 
-/* Progress */
+/* Progress — honest rendering only.
+   The bar width reflects whatever the server last reported. No
+   shimmer animation that pretends activity is happening during long
+   stages, and no slow width interpolation that smooths real jumps
+   into a fake "always moving" feel. The transition is short enough
+   to avoid jank when WS pushes a new value, but not so long that it
+   masks the underlying step. */
 .progress {
   position: relative;
   height: 5px; border-radius: 999px; overflow: hidden;
@@ -937,22 +943,11 @@ h3 { font-weight: 600; letter-spacing: -0.008em; }
 .progress > .bar {
   height: 100%; border-radius: 999px;
   background: var(--accent);
-  transition: width 400ms cubic-bezier(0.4, 0, 0.2, 1);
-}
-.progress.running > .bar::after {
-  content: ""; position: absolute; inset: 0;
-  background: linear-gradient(90deg,
-    transparent 30%,
-    color-mix(in oklch, white 40%, transparent) 50%,
-    transparent 70%);
-  animation: shimmer 1.8s linear infinite;
-}
-@keyframes shimmer {
-  0%   { transform: translateX(-100%); }
-  100% { transform: translateX(100%); }
+  transition: width 120ms linear;
 }
 .progress.done > .bar { background: var(--good); }
 .progress.failed > .bar { background: var(--bad); }
+.progress.canceled > .bar { background: var(--muted); }
 .prog-cell .info {
   display: flex; justify-content: space-between;
   margin-top: 5px;

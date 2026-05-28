@@ -483,6 +483,77 @@ def bulk_delete_jobs(
     )
 
 
+@router.post("/{job_id}/retry", response_model=JobOut)
+async def retry_job(
+    job_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Re-run a failed or canceled job using its original upload_dir.
+
+    Resets progress fields, clears the output_dir (the prior run may
+    have written a half-finished slides.pptx), keeps the same row id so
+    history and URLs stay stable, and re-enqueues. We do NOT allow
+    retrying done jobs — that's a fresh upload, not a retry.
+    """
+    job = db.get(Job, job_id)
+    if not job:
+        raise HTTPException(404, "Job not found")
+    if not user.is_admin and job.owner_id != user.id:
+        raise HTTPException(403, "Forbidden")
+    if job.status not in ("failed", "canceled"):
+        raise HTTPException(
+            409,
+            f"Only failed or canceled jobs can be retried (current: {job.status})",
+        )
+
+    upload_dir = Path(job.upload_dir)
+    if not upload_dir.is_dir() or not any(upload_dir.iterdir()):
+        # The original source files were swept away (retention / orphan
+        # cleanup / manual rm). Without them there's nothing to convert.
+        raise HTTPException(
+            410,
+            "Original upload files are gone — re-upload the source to start a new job",
+        )
+
+    s = get_settings()
+    if github_sync.is_updating():
+        raise HTTPException(503, "Service is updating, please retry shortly")
+    # Throttle: count this job as a new active job, so retry can't bypass the cap.
+    active = (
+        db.query(Job)
+        .filter(Job.owner_id == user.id)
+        .filter(Job.status.in_(("queued", "running")))
+        .count()
+    )
+    if active >= s.per_user_active_jobs:
+        raise HTTPException(
+            429,
+            f"You already have {active} active jobs (cap: {s.per_user_active_jobs})",
+        )
+
+    # Wipe the prior output. Failed runs may have left a half-written
+    # pptx that download_job would otherwise still happily serve.
+    output_dir = Path(job.output_dir)
+    if output_dir.exists():
+        shutil.rmtree(output_dir, ignore_errors=False)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    job.status = "queued"
+    job.progress_pct = 0
+    job.current_page = 0
+    job.error_msg = None
+    job.log_tail = None
+    job.started_at = None
+    job.finished_at = None
+    job.duration_seconds = 0
+    db.commit()
+    db.refresh(job)
+
+    await job_queue.enqueue(job_id)
+    return _serialize(db, job, db.query(Job).all())
+
+
 @router.post("/{job_id}/cancel", response_model=JobOut)
 def cancel_job(job_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """Cancel a queued or running job. Queued jobs flip to 'canceled'

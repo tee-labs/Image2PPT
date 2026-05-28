@@ -103,6 +103,17 @@ export default function Dashboard({
     reloadJobs();
   };
 
+  const onRetry = async (id: string) => {
+    try {
+      await api.retryJob(id);
+      // Jump to the active list so the user sees the requeued job.
+      setPage("active");
+    } catch (e) {
+      alert((e as Error).message);
+    }
+    reloadJobs();
+  };
+
   const onBulkDelete = async (ids: string[]) => {
     // One round-trip so the server can finish disk cleanup before
     // dropping each DB row. The server returns per-id status; we only
@@ -178,6 +189,7 @@ export default function Dashboard({
           title="历史任务"
           jobs={history}
           onDelete={onDelete}
+          onRetry={onRetry}
           showDuration={true}
           emptyHint="还没有完成过的任务"
           action={

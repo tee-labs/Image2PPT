@@ -114,6 +114,7 @@ export const api = {
       body: JSON.stringify({ ids, force }),
     }),
   cancelJob: (id: string) => req<Job>(`/api/jobs/${id}/cancel`, { method: "POST" }),
+  retryJob: (id: string) => req<Job>(`/api/jobs/${id}/retry`, { method: "POST" }),
   jobLogs: (id: string) => req<{ id: string; log_tail: string }>(`/api/jobs/${id}/logs`),
   downloadUrl: (id: string) => `/api/jobs/${id}/download?token=${encodeURIComponent(auth.token || "")}`,
   version: () => req<VersionInfo>("/api/system/version"),
