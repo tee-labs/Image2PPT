@@ -27,6 +27,36 @@ _paused = False
 _queue: asyncio.Queue[str] = asyncio.Queue()
 
 
+class _CancelSet:
+    """Small thread-safe-ish flag set for jobs the user asked to cancel.
+    Cleared by the queue when it observes the cancel during teardown.
+    """
+    def __init__(self) -> None:
+        self._s: set[str] = set()
+
+    def add(self, jid: str) -> None:
+        self._s.add(jid)
+
+    def discard_if_present(self, jid: str) -> bool:
+        if jid in self._s:
+            self._s.discard(jid)
+            return True
+        return False
+
+    def __contains__(self, jid: str) -> bool:
+        return jid in self._s
+
+
+_cancelled = _CancelSet()
+
+
+def mark_cancelled(job_id: str) -> None:
+    """Called by the HTTP cancel route. The queue picks this flag up
+    when run_convert returns, so the status becomes 'canceled' rather
+    than 'failed'."""
+    _cancelled.add(job_id)
+
+
 def pause() -> None:
     global _paused
     _paused = True
@@ -100,6 +130,7 @@ async def _process(job_id: str) -> None:
             )
 
         code, tail = await run_convert(
+            job_id=job.id,
             source=source,
             work_dir=Path(job.output_dir),
             upload_dir=Path(job.upload_dir),
@@ -113,7 +144,14 @@ async def _process(job_id: str) -> None:
         job.finished_at = datetime.now(timezone.utc)
         job.duration_seconds = max(int(time.monotonic() - wall_start), 1)
         pptx = Path(job.output_dir) / "slides.pptx"
-        if code == 0 and pptx.exists():
+        # Distinguish user cancel from real failure. SIGTERM via killpg
+        # delivers exit code 143 (SIGTERM) or -15; SIGKILL gives 137 or
+        # -9. The cancel route also flips an in-memory flag; check both.
+        cancelled = _cancelled.discard_if_present(job.id) or code in (-15, -9, 137, 143)
+        if cancelled:
+            job.status = "canceled"
+            job.error_msg = "cancelled by user"
+        elif code == 0 and pptx.exists():
             job.status = "done"
             job.progress_pct = 100
             job.current_page = job.page_count

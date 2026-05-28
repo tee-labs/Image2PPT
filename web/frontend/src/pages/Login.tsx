@@ -3,7 +3,7 @@ import { api, auth, type Me } from "../api/client";
 import { Icon } from "../components/icons";
 import logoUrl from "../assets/logo.png";
 
-const REPO_URL = "https://github.com/GuopengLin/Image2PPT";
+const REPO_URL = "https://github.com/shenhao-stu/Image2PPT";
 
 export default function Login({ onLogin }: { onLogin: (me: Me) => void }) {
   const [username, setUsername] = useState("admin");
@@ -63,7 +63,7 @@ export default function Login({ onLogin }: { onLogin: (me: Me) => void }) {
         <a className="login-repo" href={REPO_URL} target="_blank" rel="noreferrer">
           <Icon.Github />
           <div className="info">
-            <div className="login-repo-name">GuopengLin/Image2PPT</div>
+            <div className="login-repo-name">shenhao-stu/Image2PPT</div>
             <div className="login-repo-meta">查看源码 · 报告问题</div>
           </div>
           <span className="login-repo-arrow">↗</span>

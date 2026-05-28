@@ -1,75 +1,62 @@
-/* DeckWeaver — refined developer-tool aesthetic.
-   Tokens on :root; [data-theme="dark"] swaps them. */
+/* DeckWeaver — warm-dark editorial × developer-tool aesthetic.
+   Inspired by getoken.tech (warm black + rose accent), but with
+   Instrument Serif for editorial wordmarks and a soft dot-grid
+   atmosphere. Single theme (dark); the light-theme :root block
+   was removed because the deployment is configured to always
+   apply data-theme="dark". */
 
-:root {
-  /* light + beige (default) */
-  --bg:            #faf5e8;
-  --panel:         #ffffff;
-  --panel-2:       #f3ead4;
-  --panel-3:       #ebe0c0;
-  --border:        #e3d8bb;
-  --border-strong: #c8b993;
-  --text:          #1f1a10;
-  --text-2:        #4a4231;
-  --muted:         #8a7e61;
-  --faint:         #b4a784;
+:root,
+:root[data-theme="dark"] {
+  /* Warm-dark surfaces (≈ getoken.tech palette).
+     bg has a faint red undertone, sets the "studio at night" mood. */
+  --bg:            #0c0709;
+  --panel:         #100b0d;   /* getoken's --card */
+  --panel-2:       #16100f;
+  --panel-3:       #1d1517;
+  --border:        #2a1d22;
+  --border-strong: #3a2731;
+  --text:          #f5f7f6;
+  --text-2:        #dbdcd9;
+  --muted:         #a39d9b;
+  --faint:         #6a6664;
 
-  --accent:        oklch(0.62 0.12 70);
-  --accent-2:      oklch(0.52 0.12 70);
-  --accent-fg:     #faf5e8;
-  --accent-soft:   oklch(0.62 0.12 70 / 0.14);
-  --accent-ring:   oklch(0.62 0.12 70 / 0.30);
+  /* Accent: rose 400 → 500 gradient. Distinctive vs the generic
+     blue you see on every other dev tool. */
+  --accent:        oklch(0.74 0.16 18);   /* ≈ #fb7185 rose-400 */
+  --accent-2:      oklch(0.62 0.18 22);   /* ≈ #e11d48 rose-600 */
+  --accent-fg:     #110608;
+  --accent-soft:   oklch(0.74 0.16 18 / 0.14);
+  --accent-ring:   oklch(0.74 0.16 18 / 0.34);
 
-  --good:          oklch(0.56 0.13 150);
-  --good-soft:     oklch(0.56 0.13 150 / 0.14);
-  --warn:          oklch(0.66 0.15 65);
-  --warn-soft:     oklch(0.66 0.15 65 / 0.14);
-  --bad:           oklch(0.55 0.18 25);
-  --bad-soft:      oklch(0.55 0.18 25 / 0.12);
+  /* Status pills */
+  --good:          oklch(0.74 0.16 150);
+  --good-soft:     oklch(0.74 0.16 150 / 0.14);
+  --warn:          oklch(0.80 0.16 75);
+  --warn-soft:     oklch(0.80 0.16 75 / 0.14);
+  --bad:           oklch(0.66 0.22 28);
+  --bad-soft:      oklch(0.66 0.22 28 / 0.14);
 
-  --radius:        10px;
-  --radius-sm:     6px;
-  --radius-lg:     14px;
-  --shadow-card:   0 1px 0 rgb(255 255 255 / 0.6) inset, 0 6px 24px -18px rgb(60 45 20 / 0.18);
+  --radius:        12px;
+  --radius-sm:     8px;
+  --radius-lg:     16px;
+  --shadow-card:   0 0 0 1px rgb(255 255 255 / 0.02) inset,
+                   0 18px 50px -28px rgb(0 0 0 / 0.85);
 
   --row-pad-y:     14px;
-  --section-gap:   18px;
+  --section-gap:   20px;
   --card-pad:      28px;
 
-  --sidebar-w:     280px;
-}
+  --sidebar-w:     268px;
 
-:root[data-theme="dark"] {
-  /* GitHub Primer dark — matches getoken-panel/frontend/styles.css. */
-  --bg:            #0e1117;
-  --panel:         #161b22;
-  --panel-2:       #1c2128;
-  --panel-3:       #22272e;
-  --border:        #2d333b;
-  --border-strong: #444c56;
-  --text:          #c9d1d9;
-  --text-2:        #adbac7;
-  --muted:         #8b949e;
-  --faint:         #6e7681;
-
-  /* Accent: GitHub blue (#2f81f7), expressed as oklch so existing
-     color-mix() callsites keep working. */
-  --accent:        oklch(0.62 0.18 252);
-  --accent-2:      oklch(0.55 0.18 252);
-  --accent-fg:     #ffffff;
-  --accent-soft:   oklch(0.62 0.18 252 / 0.16);
-  --accent-ring:   oklch(0.62 0.18 252 / 0.34);
-
-  /* Status colors lifted from GitHub Primer / getoken's pill scale. */
-  --good:          oklch(0.66 0.18 145);
-  --good-soft:     oklch(0.66 0.18 145 / 0.16);
-  --warn:          oklch(0.70 0.15 75);
-  --warn-soft:     oklch(0.70 0.15 75 / 0.16);
-  --bad:           oklch(0.62 0.20 25);
-  --bad-soft:      oklch(0.62 0.20 25 / 0.16);
-
-  --shadow-card:   0 0 0 1px rgb(255 255 255 / 0.02) inset,
-                   0 8px 24px -16px rgb(0 0 0 / 0.65);
+  /* Type families */
+  --font-display:  "Instrument Serif", "Source Han Serif SC", "Songti SC",
+                   "STSong", serif;
+  --font-sans:     "Geist", ui-sans-serif, system-ui, -apple-system,
+                   "Segoe UI", "PingFang SC", "Hiragino Sans GB",
+                   "Noto Sans SC", "Microsoft YaHei",
+                   "WenQuanYi Micro Hei", sans-serif;
+  --font-mono:     "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono",
+                   Menlo, Consolas, monospace;
 }
 
 :root[data-density="compact"] {
@@ -83,18 +70,47 @@ html, body, #root { margin: 0; height: 100%; }
 body {
   background: var(--bg);
   color: var(--text);
-  /* System / CJK-friendly stack; no external font fetch (CSP-safe). */
-  font: 14px/1.55 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
-        "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Noto Sans SC",
-        "Microsoft YaHei", "WenQuanYi Micro Hei", sans-serif;
+  font: 14px/1.55 var(--font-sans);
+  font-feature-settings: "ss01";
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+  overflow-x: hidden;
 }
 
-.mono {
-  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
-               "Liberation Mono", monospace;
+/* ---------- Atmospheric background (subtle dot grid + warm vignette) ---------- */
+.bg-grid {
+  position: fixed; inset: 0;
+  z-index: 0; pointer-events: none;
+  background-image:
+    radial-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px);
+  background-size: 28px 28px;
+  background-position: 0 0;
+  mask-image: radial-gradient(circle at 30% 0%, #000 0%, transparent 70%);
+  -webkit-mask-image: radial-gradient(circle at 30% 0%, #000 0%, transparent 70%);
 }
+.bg-glow {
+  position: fixed; top: -28vh; right: -28vw;
+  width: 80vw; height: 70vh;
+  z-index: 0; pointer-events: none;
+  background:
+    radial-gradient(closest-side,
+      oklch(0.62 0.20 22 / 0.18),
+      oklch(0.50 0.15 28 / 0.08) 60%,
+      transparent 80%);
+  filter: blur(8px);
+}
+
+/* Push the app shell above the bg layers */
+#root { position: relative; z-index: 1; }
+
+.mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.serif { font-family: var(--font-display); letter-spacing: 0.005em; }
+
+/* H1 / hero — Instrument Serif gives this app its editorial signature
+   while Geist handles everything else with refined neutrality. */
+h1, h2, h3 { color: var(--text); }
+h1 { font-family: var(--font-display); font-weight: 400; letter-spacing: -0.02em; }
+h2 { letter-spacing: -0.01em; }
 
 /* ---------- Buttons ---------- */
 .btn {

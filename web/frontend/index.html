@@ -4,8 +4,24 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>DeckWeaver · 图片转 PPT</title>
+    <meta
+      name="description"
+      content="DeckWeaver — 把幻灯片截图或 PDF 重建为可编辑 PowerPoint。VLM 驱动，几分钟出图。"
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <!-- Distinctive type stack:
+         - Instrument Serif for the wordmark / hero (editorial flair)
+         - Geist for body (modern, refined, not Inter)
+         - JetBrains Mono for code/IDs/numbers -->
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap"
+    />
   </head>
   <body>
+    <div class="bg-grid" aria-hidden="true"></div>
+    <div class="bg-glow" aria-hidden="true"></div>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

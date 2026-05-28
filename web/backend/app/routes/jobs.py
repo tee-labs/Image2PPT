@@ -376,7 +376,42 @@ def delete_job(job_id: str, user: User = Depends(get_current_user), db: Session 
     if not user.is_admin and job.owner_id != user.id:
         raise HTTPException(403, "Forbidden")
     if job.status == "running":
-        raise HTTPException(409, "Cannot delete a running job; wait for it to finish")
+        raise HTTPException(409, "Cannot delete a running job; cancel it first")
     job_queue.cleanup_job_dirs(job)
     db.delete(job)
     db.commit()
+
+
+@router.post("/{job_id}/cancel", response_model=JobOut)
+def cancel_job(job_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Cancel a queued or running job. Queued jobs flip to 'canceled'
+    immediately; running jobs receive SIGTERM (then SIGKILL after a
+    grace period) and the queue picks up the cancellation flag on
+    teardown."""
+    from ..runner import request_cancel
+
+    job = db.get(Job, job_id)
+    if not job:
+        raise HTTPException(404, "Job not found")
+    if not user.is_admin and job.owner_id != user.id:
+        raise HTTPException(403, "Forbidden")
+    if job.status in ("done", "failed", "canceled"):
+        raise HTTPException(409, f"Job already in terminal state: {job.status}")
+
+    job_queue.mark_cancelled(job_id)
+
+    if job.status == "running":
+        signalled = request_cancel(job_id)
+        if not signalled:
+            # Subprocess already exited; the queue will sort it out.
+            pass
+    else:  # queued — never started; flip the status here so it doesn't run
+        job.status = "canceled"
+        job.error_msg = "cancelled before start"
+        from datetime import datetime, timezone as _tz
+        job.finished_at = datetime.now(_tz.utc)
+        db.commit()
+        db.refresh(job)
+
+    all_jobs = db.query(Job).all()
+    return _serialize(db, job, all_jobs)

@@ -89,6 +89,7 @@ export const api = {
     return req<Job>("/api/jobs", { method: "POST", body: fd });
   },
   deleteJob: (id: string) => req<void>(`/api/jobs/${id}`, { method: "DELETE" }),
+  cancelJob: (id: string) => req<Job>(`/api/jobs/${id}/cancel`, { method: "POST" }),
   jobLogs: (id: string) => req<{ id: string; log_tail: string }>(`/api/jobs/${id}/logs`),
   downloadUrl: (id: string) => `/api/jobs/${id}/download?token=${encodeURIComponent(auth.token || "")}`,
   version: () => req<VersionInfo>("/api/system/version"),

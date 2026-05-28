@@ -188,7 +188,7 @@ def _parse_layout_json(text: str) -> dict[str, Any]:
 
 # ----------------------------- helpers --------------------------------
 
-def normalize_image(src: Path, max_long_edge: int = 1600) -> tuple[bytes, int, int]:
+def normalize_image(src: Path, max_long_edge: int = 1280) -> tuple[bytes, int, int]:
     Image = _lazy_pil()
     with Image.open(src) as im:
         im.load()
@@ -296,12 +296,15 @@ def main() -> int:
     (work / "logs").mkdir(exist_ok=True)
     (work / "source").mkdir(exist_ok=True)
 
-    api_base = os.environ.get("DECKWEAVER_LLM_BASE", "https://sub2api.ace-ozer.tech")
+    api_base = os.environ.get("DECKWEAVER_LLM_BASE", "")
     api_key = os.environ.get("DECKWEAVER_LLM_KEY", "")
     primary_model = os.environ.get("DECKWEAVER_LLM_MODEL", "gpt-5.5")
     fallback_model = os.environ.get("DECKWEAVER_LLM_FALLBACK", "gpt-5.4")
-    if not api_key:
-        print("ERROR: DECKWEAVER_LLM_KEY env var not set", file=sys.stderr)
+    parallel = int(os.environ.get("DECKWEAVER_LLM_PARALLEL", "2"))
+    max_long_edge = int(os.environ.get("DECKWEAVER_MAX_LONG_EDGE", "1280"))
+    if not api_base or not api_key:
+        print("ERROR: DECKWEAVER_LLM_BASE and DECKWEAVER_LLM_KEY env vars are required",
+              file=sys.stderr)
         return 2
 
     pages = discover_page_images(src)
@@ -309,76 +312,93 @@ def main() -> int:
     pages = [pages[i - 1] for i in selected]
 
     print(f"=== 1/3  prepare ({len(pages)} pages)", flush=True)
-    # Copy page images into work/source for traceability.
+    # Normalize + copy page images. We INTENTIONALLY do not emit "page N:"
+    # markers here — runner.py treats the latest such line as current_page,
+    # so emitting them in prep would race ahead of the actual VLM work and
+    # peg current_page at N before extraction even starts.
     src_dir = work / "source"
     src_dir.mkdir(exist_ok=True)
     norm_pages: list[tuple[int, Path, int, int]] = []
     for i, p in enumerate(pages, 1):
-        # If the input is already a flat dir of page_NN.{ext}, keep names;
-        # otherwise re-number.
         target = src_dir / f"page_{i:02d}.png"
-        img_bytes, w, h = normalize_image(p)
+        img_bytes, w, h = normalize_image(p, max_long_edge=max_long_edge)
         target.write_bytes(img_bytes)
         norm_pages.append((i, target, w, h))
-        print(f"page {i}: normalized {p.name} → {w}x{h}", flush=True)
+        print(f"  prepare {i}/{len(pages)}: {p.name} -> {w}x{h}", flush=True)
 
     print(f"=== 2/3  vlm-extract", flush=True)
     Builder = _import_builder()
     qa: dict[str, Any] = {"pages": [], "model_primary": primary_model, "model_fallback": fallback_model}
 
-    combined_slides: list[dict[str, Any]] = []
-    for i, page_path, w, h in norm_pages:
-        page_start = time.time()
+    page_results: dict[int, dict[str, Any]] = {}
+
+    def _extract_one(i: int, page_path: Path, w: int, h: int) -> tuple[int, dict[str, Any]]:
+        # First "page N:" line for this page lands here, so current_page
+        # advances when we actually start the VLM call.
         print(f"page {i}: vlm call ({primary_model})", flush=True)
-        layout: dict[str, Any]
+        t0 = time.time()
         used_model = primary_model
+        layout: dict[str, Any] | None = None
+        err: str | None = None
         try:
-            layout = vlm_call(
-                page_path.read_bytes(),
-                api_base=api_base, api_key=api_key, model=primary_model,
-                extra_hint=f"The source image is {w}x{h} pixels (page {i}).",
-            )
+            layout = vlm_call(page_path.read_bytes(),
+                              api_base=api_base, api_key=api_key, model=primary_model,
+                              extra_hint=f"The source image is {w}x{h} pixels (page {i}).")
         except Exception as e_primary:  # noqa: BLE001
             print(f"page {i}: primary failed ({e_primary}); trying {fallback_model}", flush=True)
             try:
                 used_model = fallback_model
-                layout = vlm_call(
-                    page_path.read_bytes(),
-                    api_base=api_base, api_key=api_key, model=fallback_model,
-                    extra_hint=f"The source image is {w}x{h} pixels (page {i}).",
-                )
+                layout = vlm_call(page_path.read_bytes(),
+                                  api_base=api_base, api_key=api_key, model=fallback_model,
+                                  extra_hint=f"The source image is {w}x{h} pixels (page {i}).")
             except Exception as e_fb:  # noqa: BLE001
-                print(f"page {i}: FAILED both models: {e_fb}", flush=True)
-                qa["pages"].append({"page": i, "status": "failed", "error": str(e_fb)})
-                continue
-
-        # In text-only mode, drop shape/line/table elements (closer to upstream
-        # text-only mode semantics).
+                err = str(e_fb)
+                print(f"page {i}: FAILED both models: {err}", flush=True)
+        if err or layout is None:
+            return i, {"status": "failed", "error": err, "duration_s": round(time.time() - t0, 1)}
         if args.mode == "text-only":
-            els = layout.get("elements", [])
-            layout["elements"] = [e for e in els if e.get("type") == "text"]
-
+            layout["elements"] = [e for e in layout.get("elements", []) if e.get("type") == "text"]
         layout.setdefault("source_width", w)
         layout.setdefault("source_height", h)
         layout.setdefault("background", "#FFFFFF")
-
-        layout_path = work / "layouts" / f"page_{i:03d}.layout.json"
-        layout_path.write_text(json.dumps(layout, ensure_ascii=False, indent=2),
-                               encoding="utf-8")
-        combined_slides.append({
-            "background": layout.get("background", "#FFFFFF"),
-            "source_width": layout.get("source_width"),
-            "source_height": layout.get("source_height"),
-            "elements": layout.get("elements", []),
-        })
-        qa["pages"].append({
-            "page": i,
-            "status": "ok",
-            "model": used_model,
-            "elements": len(layout.get("elements", [])),
-            "duration_s": round(time.time() - page_start, 1),
-        })
+        (work / "layouts" / f"page_{i:03d}.layout.json").write_text(
+            json.dumps(layout, ensure_ascii=False, indent=2), encoding="utf-8")
         print(f"page {i}: extracted {len(layout.get('elements', []))} elements", flush=True)
+        return i, {"status": "ok", "model": used_model,
+                   "elements": len(layout.get("elements", [])),
+                   "duration_s": round(time.time() - t0, 1),
+                   "layout": layout}
+
+    # parallel=1 → serial (legacy). parallel>=2 → ThreadPoolExecutor cuts
+    # wall time on multi-page PDFs ~linearly until we hit upstream limits.
+    if parallel <= 1 or len(norm_pages) == 1:
+        for i, page_path, w, h in norm_pages:
+            idx, result = _extract_one(i, page_path, w, h)
+            page_results[idx] = result
+    else:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        with ThreadPoolExecutor(max_workers=parallel) as pool:
+            futs = [pool.submit(_extract_one, i, p, w, h) for i, p, w, h in norm_pages]
+            for fut in as_completed(futs):
+                idx, result = fut.result()
+                page_results[idx] = result
+
+    combined_slides: list[dict[str, Any]] = []
+    for i, _, _, _ in norm_pages:
+        r = page_results.get(i, {})
+        if r.get("status") == "ok":
+            ly = r["layout"]
+            combined_slides.append({
+                "background": ly.get("background", "#FFFFFF"),
+                "source_width": ly.get("source_width"),
+                "source_height": ly.get("source_height"),
+                "elements": ly.get("elements", []),
+            })
+            qa["pages"].append({"page": i, "status": "ok", "model": r["model"],
+                                "elements": r["elements"], "duration_s": r["duration_s"]})
+        else:
+            qa["pages"].append({"page": i, "status": "failed", "error": r.get("error"),
+                                "duration_s": r.get("duration_s")})
 
     print(f"=== 3/3  render", flush=True)
     out_pptx = work / "slides.pptx"

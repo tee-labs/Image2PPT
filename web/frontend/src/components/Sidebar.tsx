@@ -52,7 +52,7 @@ export default function Sidebar({
     : [];
 
   const repoName =
-    version?.remote_url.replace(/^https?:\/\/(www\.)?github\.com\//, "") || "GuopengLin/Image2PPT";
+    version?.remote_url.replace(/^https?:\/\/(www\.)?github\.com\//, "") || "shenhao-stu/Image2PPT";
   const repoStatusClass = version?.updating ? "updating" : (version?.behind ?? 0) > 0 ? "behind" : "up";
   const repoStatusText = version?.updating
     ? "更新中"

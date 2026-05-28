@@ -89,6 +89,15 @@ export default function Dashboard({
     reloadJobs();
   };
 
+  const onCancel = async (id: string) => {
+    try {
+      await api.cancelJob(id);
+    } catch (e) {
+      alert((e as Error).message);
+    }
+    reloadJobs();
+  };
+
   const onBulkDelete = async (ids: string[]) => {
     const results = await Promise.allSettled(ids.map((id) => api.deleteJob(id)));
     const failed = results.filter((r) => r.status === "rejected").length;
@@ -137,6 +146,7 @@ export default function Dashboard({
           title="正在进行"
           jobs={active}
           onDelete={onDelete}
+          onCancel={onCancel}
           showDuration={false}
           emptyHint="队列为空，上传文件以开始"
         />
