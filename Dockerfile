@@ -95,6 +95,13 @@ RUN pip install -r /tmp/web-requirements.txt
 # 额外显式装 paddlepaddle（CPU 轮）：PaddleOCR 3.x 不硬依赖引擎，
 # 缺它时 warmup 报 "Engine 'paddle_static' is unavailable"。CPU 镜像选 paddlepaddle
 # （GPU 见 bootstrap.sh 的 paddlepaddle-gpu 分支）。
+#
+# 版本钉死 paddlepaddle==3.2.2：更新的 3.x 引入了新的 PIR 执行器 + oneDNN 指令
+# 后端的已知冲突，warmup 与推理都会报
+# "(Unimplemented) ConvertPirAttribute2RuntimeAttribute not support
+# [pir::ArrayAttribute<pir::DoubleAttribute>]"
+# （见 PaddlePaddle/Paddle#77340、PaddleOCR#18162）。3.2.2 是回归前的稳定版。
+# 若上游修复后想放开，删掉该版本约束即可。
 RUN pip install \
         python-pptx \
         pillow \
@@ -102,7 +109,7 @@ RUN pip install \
         opencv-python \
         'paddleocr>=3' \
         'paddlex[ocr]' \
-        paddlepaddle \
+        'paddlepaddle==3.2.2' \
         pytesseract \
         onnxruntime \
         huggingface_hub \
