@@ -86,9 +86,9 @@ RUN mkdir -p /etc/fonts/conf.d && printf '%s\n' \
 WORKDIR /app
 
 # ---- Python 依赖：先装（利用层缓存） ----
-# web 层依赖。
-COPY web/backend/requirements.txt ./
-RUN pip install -r web/backend/requirements.txt
+# web 层依赖。注意 COPY 进当前目录后用对应路径引用（避免路径不一致）。
+COPY web/backend/requirements.txt /tmp/web-requirements.txt
+RUN pip install -r /tmp/web-requirements.txt
 
 # CLI 流水线依赖。镜像内不装 easyocr（会拉取 torch ~1GB，交叉验证默认关闭）。
 # 列表与根 requirements.txt 保持一致，剔除 easyocr；如后者变更请同步这里。
