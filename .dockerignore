@@ -1,0 +1,38 @@
+# 版本控制 / CI
+.git/
+.gitignore
+.github/
+
+# 运行时状态（容器内用卷挂载，绝不进镜像）
+web/data/
+
+# 前端构建产物与依赖（镜像内重新构建，避免宿主脏产物）
+web/frontend/node_modules/
+web/frontend/dist/
+
+# Python 缓存 / 虚拟环境
+**/__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# 测试与文档示例（镜像只跑服务，不需要这些）
+tests/
+assets/examples/
+references/
+
+# 编辑器 / 系统 / 本地配置
+.vscode/
+.idea/
+.DS_Store
+*.swp
+*.swo
+web/.env
+
+# 不排除 models/ —— font_classifier.onnx (~20MB) 必须随镜像分发。

@@ -1,0 +1,76 @@
+name: Build and publish Docker image
+
+# 构建 Web 前后端一体镜像并发布到 Docker Hub（mc02cxj/image2ppt）。
+#
+# 触发：
+#   - push 到 main 且改动影响镜像（Dockerfile / web / scripts / 依赖 / 模型）
+#   - 推送语义化版本 tag（v*）→ 产生 vX.Y.Z、vX.Y、latest 等 tag
+#   - workflow_dispatch（Actions 页面手动触发）
+#
+# 首次使用前需在仓库 Settings → Secrets and variables → Actions 配置：
+#   DOCKERHUB_USERNAME  Docker Hub 账号（= 镜像 namespace，这里固定 mc02cxj）
+#   DOCKERHUB_TOKEN     Docker Hub 的 Access Token（不要用密码）
+#
+# 仅 linux/amd64：PaddlePaddle / PaddleOCR 等深度学习依赖只发布 amd64 预编译 wheel。
+
+on:
+  push:
+    branches: [main]
+    # 仅当这些路径变化才触发构建，避免无关改动（如纯文档）白跑。
+    paths:
+      - 'Dockerfile'
+      - '.dockerignore'
+      - 'web/**'
+      - 'scripts/**'
+      - 'requirements.txt'
+      - 'models/**'
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Extract metadata (tags, labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: mc02cxj/image2ppt
+          # 打 tag v1.2.3 → :1.2.3、:1.2、:latest
+          # push main → :sha-<短sha>（不给 main 自动打 latest，避免对分支误打）
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern=latest
+            type=sha,prefix=sha-,format=short
+            # main 分支额外打 latest，方便 docker pull :latest 取最新主线。
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # 用 GitHub Actions 缓存加速后续构建（warmup 下载模型较慢）。
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

@@ -175,6 +175,31 @@ bash web/start-prod.sh                     # 默认监听 0.0.0.0:8000
 PORT=9000 bash web/start-prod.sh
 ```
 
+#### Docker 部署（推荐给不想自己装环境的人）
+
+官方镜像 `mc02cxj/image2ppt` 已把 LibreOffice、Poppler、Tesseract、CJK 字体、PaddleOCR/RMBG 模型全部预装，拉下来即可用：
+
+```bash
+docker pull mc02cxj/image2ppt:latest
+
+docker run -d --name image2ppt \
+  -p 8000:8000 \
+  -v image2ppt-data:/app/web/data \
+  -e DECKWEAVER_ADMIN_PASSWORD='换成强口令' \
+  -e DECKWEAVER_JWT_SECRET='换成至少 32 位的随机字符串' \
+  --restart unless-stopped \
+  mc02cxj/image2ppt:latest
+```
+
+打开 `http://localhost:8000`，用 `admin` + 上面的口令登录即可。
+
+说明：
+
+- 镜像**不内置任何默认口令 / JWT 密钥**：启动护栏会拒绝以弱口令启动，因此运行时**必须**注入上面两个环境变量（否则容器启动即退出）。
+- `web/data`（SQLite、上传、产物）请用卷持久化，否则容器重建会丢历史。
+- 镜像默认 `DECKWEAVER_AUTO_UPDATE=false`、`DECKWEAVER_SANDBOX_MODE=none`、`DECKWEAVER_CROSS_VERIFY=false`；如需调整用 `-e` 覆盖。完整变量见 [web/.env.example](web/.env.example)。
+- 该镜像由 GitHub Actions 在每次合并到 `main` 或推送 `v*` tag 时自动构建发布。要在自己的 fork 上复用，需在仓库 **Settings → Secrets → Actions** 配置 `DOCKERHUB_USERNAME` 与 `DOCKERHUB_TOKEN`，并把 `.github/workflows/docker-publish.yml` 里的镜像名改成你的命名空间。
+
 更多 API 细节、ETA 公式、自动更新流程、用户管理 CLI（`web/backend/manage.py`）等说明见 [web/README.md](web/README.md)。
 
 ## 常用参数
