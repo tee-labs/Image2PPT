@@ -92,6 +92,9 @@ RUN pip install -r /tmp/web-requirements.txt
 
 # CLI 流水线依赖。镜像内不装 easyocr（会拉取 torch ~1GB，交叉验证默认关闭）。
 # 列表与根 requirements.txt 保持一致，剔除 easyocr；如后者变更请同步这里。
+# 额外显式装 paddlepaddle（CPU 轮）：PaddleOCR 3.x 不硬依赖引擎，
+# 缺它时 warmup 报 "Engine 'paddle_static' is unavailable"。CPU 镜像选 paddlepaddle
+# （GPU 见 bootstrap.sh 的 paddlepaddle-gpu 分支）。
 RUN pip install \
         python-pptx \
         pillow \
@@ -99,6 +102,7 @@ RUN pip install \
         opencv-python \
         'paddleocr>=3' \
         'paddlex[ocr]' \
+        paddlepaddle \
         pytesseract \
         onnxruntime \
         huggingface_hub \
