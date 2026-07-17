@@ -96,19 +96,24 @@ RUN pip install -r /tmp/web-requirements.txt
 # 缺它时 warmup 报 "Engine 'paddle_static' is unavailable"。CPU 镜像选 paddlepaddle
 # （GPU 见 bootstrap.sh 的 paddlepaddle-gpu 分支）。
 #
-# 版本钉死 paddlepaddle==3.2.2：更新的 3.x 引入了新的 PIR 执行器 + oneDNN 指令
-# 后端的已知冲突，warmup 与推理都会报
-# "(Unimplemented) ConvertPirAttribute2RuntimeAttribute not support
-# [pir::ArrayAttribute<pir::DoubleAttribute>]"
-# （见 PaddlePaddle/Paddle#77340、PaddleOCR#18162）。3.2.2 是回归前的稳定版。
-# 若上游修复后想放开，删掉该版本约束即可。
+# 整套 Paddle 栈钉到 PP-OCRv5 时代（项目预期模型，见 warmup.py）：
+#   - paddleocr 3.6.0：默认加载 PP-OCRv5（3.7+ 默认升到 PP-OCRv6）；
+#   - paddlex 3.6.x：被 paddleocr 3.6.0 约束为 >=3.6.0,<3.7.0，显式钉 3.6.1 防漂移；
+#   - paddlepaddle 3.2.2：回归前的稳定引擎。
+# 任意一项漂到新版都可能崩：
+#   * paddlepaddle 3.3+ → PIR 执行器 + oneDNN 冲突
+#     "(Unimplemented) ConvertPirAttribute2RuntimeAttribute not support ..."
+#     （PaddlePaddle/Paddle#77340），且 FLAGS_use_mkldnn 在 PIR 路径被忽略；
+#   * paddleocr/paddlex 3.7+ → 默认 PP-OCRv6，与 paddle 3.2.2 引擎不兼容，
+#     推理时崩成裸 std::exception（OCR 0 检测，convert.py 连锁失败）。
+# 上游全部修好后，可把这三处版本约束一并放开。
 RUN pip install \
         python-pptx \
         pillow \
         numpy \
         opencv-python \
-        'paddleocr>=3' \
-        'paddlex[ocr]' \
+        'paddleocr==3.6.0' \
+        'paddlex[ocr]==3.6.1' \
         'paddlepaddle==3.2.2' \
         pytesseract \
         onnxruntime \
