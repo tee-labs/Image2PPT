@@ -187,6 +187,7 @@ docker run -d --name image2ppt \
   -v image2ppt-data:/app/web/data \
   -e DECKWEAVER_ADMIN_PASSWORD='换成强口令' \
   -e DECKWEAVER_JWT_SECRET='换成至少 32 位的随机字符串' \
+  -e DECKWEAVER_SUBPROCESS_MEMORY_MB=0 \
   --restart unless-stopped \
   mc02cxj/image2ppt:latest
 ```
@@ -197,6 +198,7 @@ docker run -d --name image2ppt \
 
 - 镜像**不内置任何默认口令 / JWT 密钥**：启动护栏会拒绝以弱口令启动，因此运行时**必须**注入上面两个环境变量（否则容器启动即退出）。
 - `web/data`（SQLite、上传、产物）请用卷持久化，否则容器重建会丢历史。
+- **务必设置 `DECKWEAVER_SUBPROCESS_MEMORY_MB=0`**：转换子进程默认带一个 6 GB 的 `RLIMIT_AS`（虚拟地址空间）上限，而 PaddleOCR 会 mmap 模型权重 + 大块中间张量，真实图片的虚拟内存会轻易超过 6 GB，触发 `std::bad_alloc`（被吞成裸 `std::exception`），表现为 OCR 0 检测、`convert.py exited with code 1`。设为 `0` 关掉该 rlimit —— 容器内真正的内存护栏应交给 `docker run --memory`，而不是这个 rlimit。仅自测/可信任环境可用 `DECKWEAVER_REQUIRE_SECURE_SECRETS=false` 跳过强口令校验。
 - 镜像默认 `DECKWEAVER_AUTO_UPDATE=false`、`DECKWEAVER_SANDBOX_MODE=none`、`DECKWEAVER_CROSS_VERIFY=false`；如需调整用 `-e` 覆盖。完整变量见 [web/.env.example](web/.env.example)。
 - 该镜像由 GitHub Actions 在每次合并到 `main` 或推送 `v*` tag 时自动构建发布。要在自己的 fork 上复用，需在仓库 **Settings → Secrets → Actions** 配置 `DOCKERHUB_USERNAME` 与 `DOCKERHUB_TOKEN`，并把 `.github/workflows/docker-publish.yml` 里的镜像名改成你的命名空间。
 
