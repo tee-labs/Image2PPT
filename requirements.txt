@@ -2,8 +2,8 @@ python-pptx
 pillow
 numpy
 opencv-python
-paddleocr>=3
-paddlex[ocr]
+paddleocr>=3.7.0,<3.8.0
+paddlex[ocr]>=3.7.0,<3.8.0
 easyocr
 pytesseract
 onnxruntime

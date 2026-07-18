@@ -4,7 +4,7 @@ mixed up with cold-cache downloads.
 
 Touches two caches:
 
-1. **PaddleOCR PP-OCRv5** (~85 MB det + rec, cached under
+1. **PaddleOCR PP-OCRv6_medium** (~85 MB det + rec, cached under
    `~/.paddlex/official_models/`). Triggered by instantiating
    `PaddleOCR()` and running it once on a synthesized small image.
 2. **RMBG-1.4 ONNX FP16** (~88 MB, cached under
@@ -35,7 +35,7 @@ def banner(name: str) -> None:
 
 
 def warmup_paddle() -> None:
-    banner("PaddleOCR PP-OCRv5 (det + rec)")
+    banner("PaddleOCR PP-OCRv6_medium (det + rec)")
     warnings.filterwarnings("ignore")
     os.environ.setdefault("GLOG_minloglevel", "3")
     os.environ.setdefault("FLAGS_print_log", "0")
@@ -50,6 +50,11 @@ def warmup_paddle() -> None:
     from PIL import Image
     t0 = time.time()
     ocr = PaddleOCR(
+        # Pin the PP-OCRv6 medium tier explicitly (same as the real pipeline
+        # in ocr_paddle.py / prepare_ocr.py) so warmup downloads exactly
+        # the weights the pipeline will load, not the package default.
+        text_detection_model_name="PP-OCRv6_medium_det",
+        text_recognition_model_name="PP-OCRv6_medium_rec",
         lang="ch",
         device=paddle_device(),
         use_doc_orientation_classify=False,

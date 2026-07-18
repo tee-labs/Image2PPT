@@ -1,6 +1,6 @@
 {
   "cached_pipeline": false,
-  "composite": 0.964,
+  "composite": 0.9628,
   "counts": {
     "image_expected": [
       1,
@@ -8,7 +8,7 @@
     ],
     "image_in_range": true,
     "image_object_count": 4,
-    "textbox_count": 6,
+    "textbox_count": 4,
     "textbox_expected": [
       3,
       8
@@ -16,14 +16,14 @@
     "textbox_in_range": true
   },
   "fixture": "light_cover_hero",
-  "runtime_seconds": 64.42,
+  "runtime_seconds": 10.67,
   "structural": {
     "failures": [],
     "media_count": 4,
     "ok": true,
     "placeholder_count": 0,
     "slide_count": 1,
-    "text_run_count": 12,
+    "text_run_count": 18,
     "zero_byte_media": 0
   },
   "text": {
@@ -36,9 +36,9 @@
   },
   "visual": {
     "available": true,
-    "blurred_match_ratio": 0.9376,
-    "color_histogram_sim": 0.9998,
-    "exact_match_ratio": 0.9295,
-    "near_match_ratio": 0.956
+    "blurred_match_ratio": 0.9335,
+    "color_histogram_sim": 0.9997,
+    "exact_match_ratio": 0.9283,
+    "near_match_ratio": 0.9538
   }
 }

@@ -6,7 +6,7 @@
 #   2. Install all Python dependencies into the active environment.
 #   3. (macOS) Install LibreOffice + Poppler + Tesseract via Homebrew if missing.
 #      (Linux) Install via apt if available and not already present.
-#   4. Pre-download every model the skill uses (PaddleOCR PP-OCRv5,
+#   4. Pre-download every model the skill uses (PaddleOCR PP-OCRv6,
 #      RMBG-1.4) by calling scripts/warmup.py.
 #
 # Idempotent: re-running is safe; everything is skipped or cached.
@@ -69,7 +69,7 @@ python3 -m pip install --upgrade pip
 # Common deps — same regardless of CPU/GPU.
 python3 -m pip install \
     python-pptx pillow numpy opencv-python \
-    'paddleocr>=3' 'paddlex[ocr]' \
+    'paddleocr>=3.7.0,<3.8.0' 'paddlex[ocr]>=3.7.0,<3.8.0' \
     easyocr pytesseract \
     huggingface_hub
 

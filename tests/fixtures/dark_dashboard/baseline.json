@@ -1,6 +1,6 @@
 {
   "cached_pipeline": false,
-  "composite": 0.9149,
+  "composite": 0.9454,
   "counts": {
     "image_expected": [
       0,
@@ -16,18 +16,18 @@
     "textbox_in_range": true
   },
   "fixture": "dark_dashboard",
-  "runtime_seconds": 195.14,
+  "runtime_seconds": 25.34,
   "structural": {
     "failures": [],
     "media_count": 11,
     "ok": true,
     "placeholder_count": 0,
     "slide_count": 1,
-    "text_run_count": 20,
+    "text_run_count": 26,
     "zero_byte_media": 0
   },
   "text": {
-    "cer": 0.3716,
+    "cer": 0.212,
     "extra_ratio": 0.0,
     "found_keyword_count": 6,
     "keyword_recall": 1.0,
@@ -36,9 +36,9 @@
   },
   "visual": {
     "available": true,
-    "blurred_match_ratio": 0.964,
+    "blurred_match_ratio": 0.9593,
     "color_histogram_sim": 1.0,
-    "exact_match_ratio": 0.9211,
-    "near_match_ratio": 0.9647
+    "exact_match_ratio": 0.9185,
+    "near_match_ratio": 0.9629
   }
 }

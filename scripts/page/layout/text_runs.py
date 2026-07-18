@@ -27,7 +27,7 @@ def _per_char_runs(bbox: list[int], text: str, orig_img: np.ndarray,
     Three sampling modes (preference order):
 
       C) Per-WORD bboxes from PaddleOCR (`words` + `word_boxes` from
-         return_word_box=True). PP-OCRv5 segments by character class
+         return_word_box=True). PP-OCRv6 segments by character class
          (continuous digits as one word, each CJK glyph as one word),
          so `524个` arrives as words=['524','个'] with two distinct
          bboxes — exactly the granularity at which colour changes
@@ -73,13 +73,13 @@ def _per_char_runs(bbox: list[int], text: str, orig_img: np.ndarray,
             and "".join(words) == text
             and mixed_class):
         # Mode C targets MIXED-CLASS lines (digit/ASCII cluster + CJK
-        # part: `524个`, `7分钟`, `20.26%`). PP-OCRv5's word_box
+        # part: `524个`, `7分钟`, `20.26%`). PP-OCRv6's word_box
         # boundaries align with the visual change there. Pure CJK
         # lines have each glyph as a one-char word — Mode C there
         # would devolve into noisy per-char colour from antialiasing,
         # so they fall through to Mode A.
         h_img, w_img = orig_img.shape[:2]
-        # PP-OCRv5 occasionally returns overlapping word_boxes (e.g. a
+        # PP-OCRv6 occasionally returns overlapping word_boxes (e.g. a
         # `分` box extending into the next `钟`'s ink). Clip each
         # box's edges against neighbours so samples capture only the
         # intended glyph.

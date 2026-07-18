@@ -1,5 +1,5 @@
 """Centralized GPU detection for the three inference backends used in
-the pipeline: PaddlePaddle (PP-OCRv5 + SLANet_plus), PyTorch via EasyOCR,
+the pipeline: PaddlePaddle (PP-OCRv6 + SLANet_plus), PyTorch via EasyOCR,
 and ONNX Runtime (RMBG).
 
 Each backend has its own GPU story and its own way of being asked for a

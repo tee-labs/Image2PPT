@@ -96,24 +96,26 @@ RUN pip install -r /tmp/web-requirements.txt
 # 缺它时 warmup 报 "Engine 'paddle_static' is unavailable"。CPU 镜像选 paddlepaddle
 # （GPU 见 bootstrap.sh 的 paddlepaddle-gpu 分支）。
 #
-# 整套 Paddle 栈钉到 PP-OCRv5 时代（项目预期模型，见 warmup.py）：
-#   - paddleocr 3.6.0：默认加载 PP-OCRv5（3.7+ 默认升到 PP-OCRv6）；
-#   - paddlex 3.6.x：被 paddleocr 3.6.0 约束为 >=3.6.0,<3.7.0，显式钉 3.6.1 防漂移；
-#   - paddlepaddle 3.2.2：回归前的稳定引擎。
-# 任意一项漂到新版都可能崩：
-#   * paddlepaddle 3.3+ → PIR 执行器 + oneDNN 冲突
-#     "(Unimplemented) ConvertPirAttribute2RuntimeAttribute not support ..."
-#     （PaddlePaddle/Paddle#77340），且 FLAGS_use_mkldnn 在 PIR 路径被忽略；
-#   * paddleocr/paddlex 3.7+ → 默认 PP-OCRv6，与 paddle 3.2.2 引擎不兼容，
-#     推理时崩成裸 std::exception（OCR 0 检测，convert.py 连锁失败）。
-# 上游全部修好后，可把这三处版本约束一并放开。
+# 整套 Paddle 栈钉到 PP-OCRv6 时代（见 warmup.py，模型名在脚本里显式指定）：
+#   - paddleocr 3.7.0：首个内置 PP-OCRv6 模型注册表与代码路径的版本
+#     （3.6.0 仅支持 v5，3.7+ 默认 v6）。脚本显式传 text_*_model_name
+#     锁住 PP-OCRv6_medium_det/rec，不依赖包默认值漂移；
+#   - paddlex 3.7.x：被 paddleocr 3.7.0 约束为 >=3.7.0,<3.8.0，显式钉 3.7.2 防漂移；
+#   - paddlepaddle 3.2.2：故意钉回 3.2.2。两条独立理由：
+#       (a) 3.3+ 有 PIR + oneDNN 冲突
+#           "(Unimplemented) ConvertPirAttribute2RuntimeAttribute not support ..."
+#           （PaddlePaddle/Paddle#77340），CPU 推理崩成 NotImplementedError；
+#       (b) oneDNN 在 PIR 路径被忽略（FLAGS_use_mkldnn 失效）。
+#     PP-OCRv6 官方文档声明支持 paddlepaddle 3.1+，3.2.2 满足下限且规避上述崩溃。
+#     若未来 3.3+ oneDNN/PIR 修复且需其新特性，可放开此钉；CPU 路径需另加
+#     enable_mkldnn=False 兜底（PaddleOCR#18162 维护者推荐）。
 RUN pip install \
         python-pptx \
         pillow \
         numpy \
         opencv-python \
-        'paddleocr==3.6.0' \
-        'paddlex[ocr]==3.6.1' \
+        'paddleocr==3.7.0' \
+        'paddlex[ocr]==3.7.2' \
         'paddlepaddle==3.2.2' \
         pytesseract \
         onnxruntime \
@@ -123,7 +125,7 @@ RUN pip install \
 # ---- 拷贝仓库主体（代码 + scripts + 已打包的 models/font_classifier.onnx） ----
 COPY . /app
 
-# ---- 构建期预下载模型（PaddleOCR PP-OCRv5 + RMBG-1.4） ----
+# ---- 构建期预下载模型（PaddleOCR PP-OCRv6_medium + RMBG-1.4） ----
 # warmup.py 仅依赖 paddleocr / huggingface_hub / onnxruntime，不含 easyocr/torch。
 RUN python3 scripts/warmup.py
 

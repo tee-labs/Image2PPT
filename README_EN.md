@@ -142,7 +142,7 @@ If `build_deck.py` reports uncertain OCR entries, open `ocr/page_NN.ocr_review.a
 
 ## GPU Acceleration (automatic)
 
-The hot loop is PaddleOCR (PP-OCRv5) plus the optional PaddleX table model
+The hot loop is PaddleOCR (PP-OCRv6) plus the optional PaddleX table model
 and ONNX RMBG. `bootstrap.sh` auto-detects: if `nvidia-smi` is on PATH and
 reports a device, it installs the CUDA wheels (`paddlepaddle-gpu` +
 `onnxruntime-gpu`); otherwise it installs the CPU wheels. The runtime code

@@ -5,7 +5,7 @@ Loads PaddleOCR once and walks every supported `page_NN.*` image in
 --source-dir. For
 each page:
 
-  1. Runs PaddleOCR (PP-OCRv5) to get baseline text + bbox + confidence
+  1. Runs PaddleOCR (PP-OCRv6) to get baseline text + bbox + confidence
   2. Builds a review packet for entries with conf < --threshold (default 0.95)
   3. For each review entry, runs EasyOCR + Tesseract 5 on the cropped
      region and assigns a 3-engine consensus tier:
@@ -369,6 +369,11 @@ def main() -> int:
           f"device={device}) ===", flush=True)
     t0 = time.time()
     ocr = PaddleOCR(
+        # Pin the PP-OCRv6 medium tier explicitly so the loaded model does
+        # not depend on the paddleocr package's default (which flipped to
+        # v6 at 3.7.0). Medium == v5 Server accuracy tier.
+        text_detection_model_name="PP-OCRv6_medium_det",
+        text_recognition_model_name="PP-OCRv6_medium_rec",
         lang=args.lang,
         device=device,
         use_doc_orientation_classify=False,

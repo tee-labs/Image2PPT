@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""PaddleOCR PP-OCRv5 wrapper — single-page or batch.
+"""PaddleOCR PP-OCRv6 wrapper — single-page or batch.
 
 This is the ONLY OCR backend in the skill. It reads slide images and
 emits axis-aligned text bboxes in source-image pixel coordinates as a
@@ -36,7 +36,7 @@ from shared.gpu import paddle_device  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="PP-OCRv5 OCR → JSON.")
+    parser = argparse.ArgumentParser(description="PP-OCRv6 OCR → JSON.")
     parser.add_argument("inputs", nargs="*",
                         help="Single mode: one image path. "
                              "Batch mode (with --batch): pairs of "
@@ -78,14 +78,14 @@ def extract_items(result, min_conf: float) -> list[dict]:
     # Per-WORD data — populated when PaddleOCR is initialised with
     # return_word_box=True (see PaddleOCR(...) below). These are parallel
     # to texts/scores: text_words[i] is a list of "words" for line i,
-    # where PP-OCRv5 segments by character class (continuous digits as
+    # where PP-OCRv6 segments by character class (continuous digits as
     # one word, continuous CJK as another). E.g. `63个` → ['63', '个']
     # with two parallel boxes; `数智互联` → ['数智互联'] with one box.
     # Carried through to ocr.json so downstream can:
     #   - sample per-segment colors for in-bbox color changes (red
     #     keyword inside black sentence),
     #   - distinguish mixed-size segments like `63个` (big digits + small
-    #     CJK unit) — though PP-OCRv5 currently returns identical y
+    #     CJK unit) — though PP-OCRv6 currently returns identical y
     #     extents for all words on a line, so this is width-only info.
     text_words = payload.get("text_word") or []
     text_word_boxes = payload.get("text_word_boxes") or []
@@ -102,7 +102,7 @@ def extract_items(result, min_conf: float) -> list[dict]:
             "x1": x1, "y1": y1, "x2": x2, "y2": y2,
             "confidence": float(score),
         }
-        # Attach per-segment data (PP-OCRv5 emits "words" = consecutive
+        # Attach per-segment data (PP-OCRv6 emits "words" = consecutive
         # same-class runs: each CJK glyph alone, digits clustered). Two
         # exposures:
         #   - words/word_boxes: always, when joined equal text. Lets
@@ -145,10 +145,15 @@ def main() -> int:
     # reshape the input image and report bboxes in the deskewed coordinate
     # system, which does NOT match the source pixel grid.
     #
-    # return_word_box=True asks PP-OCRv5 to also emit per-character bboxes
+    # return_word_box=True asks PP-OCRv6 to also emit per-character bboxes
     # alongside the line-level boxes. Downstream uses these to detect
     # in-bbox color changes (e.g. a red keyword inside a black line).
     ocr = PaddleOCR(
+        # Pin the PP-OCRv6 medium tier explicitly so the loaded model does
+        # not depend on the paddleocr package's default (which flipped to
+        # v6 at 3.7.0). Medium == v5 Server accuracy tier.
+        text_detection_model_name="PP-OCRv6_medium_det",
+        text_recognition_model_name="PP-OCRv6_medium_rec",
         lang=args.lang,
         device=paddle_device(),
         use_doc_orientation_classify=False,

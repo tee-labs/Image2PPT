@@ -380,7 +380,7 @@ def fill_color(img: np.ndarray, x1: int, y1: int, x2: int, y2: int) -> np.ndarra
     is_container_like = total > 0 and int(saturated_mask.sum()) > 0.55 * total
     if is_container_like:
         # Dense CJK text (e.g. `网络运维智能体` — 7 bold glyphs in a tight
-        # PP-OCRv5 bbox) can also exceed 55 % saturated coverage. Distinguish
+        # PP-OCRv6 bbox) can also exceed 55 % saturated coverage. Distinguish
         # by topology: a real container fill is ONE big saturated blob; dense
         # strokes are many smaller blobs. If the largest saturated component
         # covers a clear majority of saturated pixels, accept as container;
