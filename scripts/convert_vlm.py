@@ -152,7 +152,19 @@ def vlm_call(
     extra_hint: str = "",
     timeout: float = 180.0,
     retries: int = 1,
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], str]:
+    """Call the VLM and parse its layout JSON.
+
+    Returns (layout_dict, raw_text). The raw_text is the verbatim model
+    output (after SSE reassembly) — callers should persist it so a parse
+    failure can be reproduced offline instead of vanishing.
+
+    Retries cover transient HTTP/network failures only. A JSON parse
+    failure is NOT retried: the same prompt reliably reproduces the same
+    malformed output, so retrying just burns another minute of model
+    time. Instead _VlmJsonError propagates immediately carrying the raw
+    text.
+    """
     httpx = _lazy_httpx()
     b64 = base64.b64encode(image_bytes).decode()
     body = {
@@ -195,13 +207,13 @@ def vlm_call(
             text = _vlm_stream(
                 httpx, chat_url, body, headers, timeouts
             )
-            return _parse_layout_json(text)
         except _VlmHttpError as e:
             # 4xx/5xx — body usually says why (bad key, unknown model, ...).
             last_err = RuntimeError(e.detail)
             if attempt < retries:
                 time.sleep(2 ** attempt)
                 continue
+            break
         except httpx.RequestError as e:
             # Connection refused / DNS / timeout / TLS — no response body.
             last_err = RuntimeError(
@@ -210,11 +222,16 @@ def vlm_call(
             if attempt < retries:
                 time.sleep(2 ** attempt)
                 continue
+            break
         except _VlmShapeError as e:
             last_err = RuntimeError(e.detail)
             if attempt < retries:
                 time.sleep(2 ** attempt)
                 continue
+            break
+        # HTTP succeeded and produced text — parse it. JSON errors are NOT
+        # retried (see docstring); let _VlmJsonError propagate with raw_text.
+        return _parse_layout_json(text), text
     raise RuntimeError(
         f"VLM call to {chat_url} (model={model}) failed after "
         f"{retries + 1} attempt(s): {last_err}"
@@ -293,19 +310,91 @@ _JSON_FENCE = re.compile(r"```(?:json)?\s*(\{[\s\S]+?\})\s*```", re.MULTILINE)
 
 
 def _parse_layout_json(text: str) -> dict[str, Any]:
+    """Parse the model's chat output into a layout dict.
+
+    VLMs occasionally emit slightly malformed JSON: trailing commas,
+    single-quoted strings, unescaped control chars, or commentary
+    wrapped around the JSON. We peel that back layer by layer and only
+    give up once every repair has failed — at which point the caller
+    persists the raw text so the failure is reproducible.
+    """
     t = text.strip()
+    # Strip ```json ... ``` fences if present.
     m = _JSON_FENCE.search(t)
     if m:
-        t = m.group(1)
+        t = m.group(1).strip()
+    # Trim leading commentary so the text starts at the first '{'.
     if not t.startswith("{"):
         idx = t.find("{")
         if idx >= 0:
             t = t[idx:]
+    # Trim trailing commentary after the last '}'.
     if not t.endswith("}"):
         idx = t.rfind("}")
         if idx >= 0:
             t = t[: idx + 1]
-    return json.loads(t)
+
+    # Attempt 1: strict stdlib json.
+    try:
+        return json.loads(t)
+    except json.JSONDecodeError:
+        pass
+
+    # Attempt 2: strip trailing commas (a common VLM slip: {...,} or [... ,]).
+    repaired = re.sub(r",(\s*[}\]])", r"\1", t)
+    if repaired != t:
+        try:
+            return json.loads(repaired)
+        except json.JSONDecodeError:
+            pass
+
+    # Attempt 3: tolerant parser if the deploy installed one.
+    for mod_name in ("dirtyjson", "json5"):
+        try:
+            mod = __import__(mod_name)
+        except ImportError:
+            continue
+        try:
+            loaded = mod.loads(t)
+            if isinstance(loaded, dict):
+                return loaded
+        except Exception:  # noqa: BLE001
+            continue
+
+    raise _VlmJsonError(t)
+
+
+class _VlmJsonError(Exception):
+    """The model's output couldn't be parsed as JSON. Carries the raw text
+    so the caller can persist it for offline diagnosis."""
+    def __init__(self, raw_text: str):
+        self.raw_text = raw_text
+        # Surface a compact pointer to the likely break location.
+        self.json_err = _locate_json_error(raw_text)
+        super().__init__(self.json_err)
+
+    @property
+    def detail(self) -> str:
+        return self.json_err
+
+
+def _locate_json_error(text: str) -> str:
+    """Re-run json.loads solely to extract its (lineno, col, msg) pointer,
+    and return a one-line summary with a surrounding snippet."""
+    try:
+        json.loads(text)
+        return "JSON parsed cleanly on retry (race?)"
+    except json.JSONDecodeError as e:
+        # Show ~80 chars around the reported position so the operator can
+        # see what tripped the parser without opening the raw file.
+        start = max(0, e.pos - 40)
+        end = min(len(text), e.pos + 40)
+        snippet = text[start:end].replace("\n", "\\n")
+        return (
+            f"JSON parse failed at line {e.lineno} col {e.colno} (char {e.pos}): "
+            f"{e.msg}; near: ...{snippet}... "
+            f"(raw text length={len(text)} chars)"
+        )
 
 
 # ----------------------------- helpers --------------------------------
@@ -524,22 +613,37 @@ def main() -> int:
         # advances when we actually start the VLM call.
         print(f"page {i}: vlm call ({primary_model})", flush=True)
         t0 = time.time()
-        used_model = primary_model
-        layout: dict[str, Any] | None = None
-        err: str | None = None
-        try:
-            layout = vlm_call(page_path.read_bytes(),
-                              api_base=api_base, api_key=api_key, model=primary_model,
-                              extra_hint=f"The source image is {w}x{h} pixels (page {i}).")
-        except Exception as e_primary:  # noqa: BLE001
-            print(f"page {i}: primary failed ({e_primary}); trying {fallback_model}", flush=True)
+
+        def _try(model: str) -> tuple[dict[str, Any] | None, str | None]:
+            """Run one VLM call. Returns (layout, error). On any failure the
+            raw model output (when we have it) is persisted to
+            page_NNN.raw.txt so the failure is reproducible offline."""
+            raw_path = work / "logs" / f"page_{i:03d}.raw.txt"
             try:
-                used_model = fallback_model
-                layout = vlm_call(page_path.read_bytes(),
-                                  api_base=api_base, api_key=api_key, model=fallback_model,
-                                  extra_hint=f"The source image is {w}x{h} pixels (page {i}).")
-            except Exception as e_fb:  # noqa: BLE001
-                err = str(e_fb)
+                layout, raw_text = vlm_call(
+                    page_path.read_bytes(),
+                    api_base=api_base, api_key=api_key, model=model,
+                    extra_hint=f"The source image is {w}x{h} pixels (page {i}).",
+                )
+            except _VlmJsonError as e:
+                # Model produced un-parseable JSON. Save the verbatim output
+                # so we can see what tripped the parser.
+                raw_path.write_text(e.raw_text, encoding="utf-8")
+                return None, f"{e.detail} (raw saved to {raw_path.relative_to(work)})"
+            except Exception as e:  # noqa: BLE001
+                return None, str(e)
+            # Success — still save the raw text; cheap and invaluable when a
+            # downstream Builder failure turns out to be a layout-schema issue.
+            raw_path.write_text(raw_text, encoding="utf-8")
+            return layout, None
+
+        used_model = primary_model
+        layout, err = _try(primary_model)
+        if err:
+            print(f"page {i}: primary failed ({err}); trying {fallback_model}", flush=True)
+            used_model = fallback_model
+            layout, err = _try(fallback_model)
+            if err:
                 print(f"page {i}: FAILED both models: {err}", flush=True)
         if err or layout is None:
             return i, {"status": "failed", "error": err, "duration_s": round(time.time() - t0, 1)}
