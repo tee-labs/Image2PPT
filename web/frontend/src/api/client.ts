@@ -72,12 +72,6 @@ async function req<T>(path: string, init: RequestInit = {}): Promise<T> {
   return res.json();
 }
 
-export type PowChallenge = {
-  challenge: string;
-  difficulty: number;
-  issued_at: number;
-};
-
 export type BulkDeleteResult = {
   deleted: string[];
   skipped: { id: string; reason: string }[];
@@ -85,16 +79,10 @@ export type BulkDeleteResult = {
 };
 
 export const api = {
-  powChallenge: () => req<PowChallenge>("/api/auth/pow"),
-  login: (
-    username: string,
-    password: string,
-    pow_challenge: string,
-    pow_nonce: string,
-  ) =>
+  login: (username: string, password: string) =>
     req<{ access_token: string; username: string; is_admin: boolean }>("/api/auth/login", {
       method: "POST",
-      body: JSON.stringify({ username, password, pow_challenge, pow_nonce }),
+      body: JSON.stringify({ username, password }),
     }),
   me: () => req<Me>("/api/auth/me"),
   listJobs: () => req<Job[]>("/api/jobs"),

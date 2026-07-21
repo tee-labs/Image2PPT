@@ -10,10 +10,6 @@ from pydantic import BaseModel, ConfigDict
 class LoginIn(BaseModel):
     username: str
     password: str
-    # Optional PoW fields — required only when DECKWEAVER_POW_REQUIRED=true.
-    # The client first GETs /api/auth/pow to obtain the challenge string.
-    pow_challenge: str | None = None
-    pow_nonce: str | None = None
 
 
 class TokenOut(BaseModel):

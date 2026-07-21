@@ -336,34 +336,6 @@ h3 { font-weight: 600; letter-spacing: -0.008em; }
   color: var(--muted);
   font-weight: 500;
 }
-.login-pow {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 12px 14px;
-  border: 1px dashed var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--panel-2);
-  font-size: 12.5px;
-  color: var(--muted);
-  transition: border-color 200ms, background 200ms;
-}
-.login-pow svg { color: var(--muted); flex: none; }
-.login-pow-body { display: flex; flex-direction: column; }
-.login-pow-title { font-weight: 500; color: var(--text-2); font-size: 12px; }
-.login-pow-status { font-family: var(--font-mono); font-size: 11.5px; margin-top: 2px; }
-.login-pow.login-pow-ready {
-  border-color: color-mix(in oklch, var(--good) 50%, var(--border));
-  background: var(--good-soft);
-}
-.login-pow.login-pow-ready svg,
-.login-pow.login-pow-ready .login-pow-status { color: var(--good); }
-.login-pow.login-pow-error {
-  border-color: color-mix(in oklch, var(--bad) 50%, var(--border));
-  background: var(--bad-soft);
-}
-.login-pow.login-pow-error svg,
-.login-pow.login-pow-error .login-pow-status { color: var(--bad); }
 .login-btn {
   width: 100%;
   justify-content: center;
