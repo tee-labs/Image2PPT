@@ -90,6 +90,12 @@ Everything is environment-driven (`web/.env` is auto-loaded). See
 | `DECKWEAVER_AUTO_UPDATE` | `true` | If true, the backend periodically `git fetch`es and pulls + restarts when behind. |
 | `DECKWEAVER_UPDATE_POLL_SECONDS` | `600` | Poll interval. |
 | `DECKWEAVER_GIT_BRANCH` | `main` | Branch tracked for auto-update. |
+| `DECKWEAVER_USE_VLM` | `false` | If true, the runner invokes `scripts/convert_vlm.py` (cloud VLM) instead of the default local-OCR `scripts/convert.py`. Lower fidelity — text + shapes only, no extracted picture objects. Requires the `LLM_*` vars below and `httpx` (`requirements-vps.txt`). |
+| `DECKWEAVER_LLM_BASE` | _(unset)_ | OpenAI-compatible base URL for the VLM profile (e.g. `https://api.example.com/v1`). Required when `DECKWEAVER_USE_VLM=true`. |
+| `DECKWEAVER_LLM_KEY` | _(unset)_ | Bearer token sent as `Authorization: Bearer …` to the VLM endpoint. Required when `DECKWEAVER_USE_VLM=true`. |
+| `DECKWEAVER_LLM_MODEL` / `DECKWEAVER_LLM_FALLBACK` | `gpt-5.5` / `gpt-5.4` | Primary and fallback model names. |
+| `DECKWEAVER_LLM_PARALLEL` | `2` | Concurrent page requests to the VLM endpoint. |
+| `DECKWEAVER_MAX_LONG_EDGE` | `1280` | Max pixel size of the page PNG sent to the VLM (longer edge). |
 
 ## User management
 

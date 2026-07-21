@@ -90,6 +90,15 @@ python tests/runner/runner.py --rerun-pipeline      # bypass cache
 python tests/runner/runner.py --update-baseline     # record current scores
 ```
 
+Unit/smoke tests (offline; pytest-style, also discovers the `unittest`
+tests under `tests/`):
+
+```bash
+pip install -r requirements-dev.txt
+pytest tests/test_convert_vlm_smoke.py   # VLM renderer contract (no API key)
+pytest                                    # all unit tests
+```
+
 There is no Python lint/typecheck config in the repo; match existing style.
 
 ## Architecture boundaries (matter for edits)
@@ -156,6 +165,17 @@ There is no Python lint/typecheck config in the repo; match existing style.
 - **easyocr/torch is NOT installed in Docker** (would add ~1 GB). Cross-verify
   (`DECKWEAVER_CROSS_VERIFY`) defaults to off; only enable where both
   EasyOCR and Tesseract are installed.
+- **VLM profile is opt-in and conflicts with the project's no-cloud default.**
+  `DECKWEAVER_USE_VLM=true` makes the web runner invoke
+  `scripts/convert_vlm.py` instead of `scripts/convert.py`. That path
+  bypasses local OCR entirely and calls an OpenAI-compatible
+  `/v1/chat/completions` endpoint, so it requires `DECKWEAVER_LLM_BASE` +
+  `DECKWEAVER_LLM_KEY` (forwarded by `sandbox.safe_env`) and the `httpx`
+  dependency (see `requirements-vps.txt`). Trade-off: the VLM profile emits
+  text + vector shapes only — it does NOT extract logos/photos as
+  independent picture objects, so rebuilt decks are lower fidelity than
+  the local-OCR default. `deploy/deckweaver-web.service` is a systemd unit
+  for the VPS/VLM deployment.
 - **CJK font metrics matter.** The Dockerfile installs WenQuanYi/Noto CJK
   fonts and a fontconfig alias mapping Microsoft YaHei / 微软雅黑 / PingFang SC
   to metric-compatible substitutes. Font calibration relies on these aliases.

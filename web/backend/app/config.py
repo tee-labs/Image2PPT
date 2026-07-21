@@ -45,6 +45,16 @@ class Settings(BaseSettings):
     # wheels). Set to true only when both are installed.
     cross_verify: bool = False
 
+    # Opt in to the cloud VLM profile (scripts/convert_vlm.py) instead of
+    # the default local-OCR pipeline (scripts/convert.py). When true the
+    # runner invokes convert_vlm.py, which calls an OpenAI-compatible
+    # /v1/chat/completions endpoint. Requires DECKWEAVER_LLM_BASE and
+    # DECKWEAVER_LLM_KEY (forwarded by sandbox.safe_env) plus httpx.
+    # NOTE: the VLM profile emits text + vector shapes only — it does
+    # NOT extract logos/photos as independent picture objects, so the
+    # rebuilt deck is lower fidelity than the local-OCR default.
+    use_vlm: bool = False
+
     # GitHub auto-update — OFF by default. Enabling pulls remote code
     # and re-execs the server, so a compromised upstream becomes RCE.
     # Trusted single-machine deploys can opt in via env.
@@ -52,7 +62,7 @@ class Settings(BaseSettings):
     update_poll_seconds: int = 600
     git_remote: str = "origin"
     git_branch: str = "main"
-    github_repo_url: str = "https://github.com/GuopengLin/Image2PPT"
+    github_repo_url: str = "https://github.com/tee-labs/Image2PPT"
 
     # CORS (frontend dev server)
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"

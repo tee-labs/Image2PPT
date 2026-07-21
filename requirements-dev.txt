@@ -1,0 +1,7 @@
+# Development-only deps. Not required for the CLI pipeline (requirements.txt)
+# nor the web service (web/backend/requirements.txt); install only when
+# running the test suite.
+#
+# The VLM smoke test (tests/test_convert_vlm_smoke.py) uses pytest, which
+# also auto-discovers the repo's unittest-style tests under tests/.
+pytest>=8.0
