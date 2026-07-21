@@ -111,6 +111,38 @@ RULES:
 """
 
 
+def _resolve_endpoints(api_base: str) -> tuple[str, str]:
+    """Given DECKWEAVER_LLM_BASE, return (chat_url, models_url).
+
+    Tolerates bases written as '.../v1', '.../v1/chat/completions', or a
+    bare host so operators can paste whatever the provider documents.
+    """
+    base = api_base.rstrip("/")
+    if base.endswith("/chat/completions"):
+        chat_url = base
+        models_url = base[: base.rfind("/chat/completions")] + "/models"
+    elif base.endswith("/v1"):
+        chat_url = base + "/chat/completions"
+        models_url = base + "/models"
+    else:
+        chat_url = base + "/v1/chat/completions"
+        models_url = base + "/v1/models"
+    return chat_url, models_url
+
+
+def _summarize_http_error(r: "httpx.Response") -> str:
+    """Compact one-liner for a non-2xx response: status + trimmed body.
+
+    Includes the response body because OpenAI-compatible gateways put the
+    real reason there (e.g. 'model not found', 'invalid api key'). Trimmed
+    so a multi-KB HTML error page doesn't flood the log.
+    """
+    body = r.text.strip()
+    if len(body) > 500:
+        body = body[:500] + f"... (+{len(body) - 500} more chars)"
+    return f"HTTP {r.status_code} from {r.request.url}: {body}"
+
+
 def vlm_call(
     image_bytes: bytes,
     *,
@@ -139,32 +171,49 @@ def vlm_call(
         "max_tokens": 8000,
         "temperature": 0.0,
     }
-    base = api_base.rstrip("/")
-    # Tolerate users who paste either '.../v1' or '.../v1/chat/completions'.
-    if base.endswith("/chat/completions"):
-        url = base
-    elif base.endswith("/v1"):
-        url = base + "/chat/completions"
-    else:
-        url = base + "/v1/chat/completions"
+    chat_url, _ = _resolve_endpoints(api_base)
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
 
     last_err: Exception | None = None
     for attempt in range(retries + 1):
         try:
             with httpx.Client(timeout=timeout) as c:
-                r = c.post(url, json=body, headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                })
+                r = c.post(chat_url, json=body, headers=headers)
                 r.raise_for_status()
-                text = r.json()["choices"][0]["message"]["content"]
+                # Validate the response shape BEFORE parsing the layout so a
+                # malformed body produces a clear error instead of a bare
+                # KeyError deeper in _parse_layout_json.
+                try:
+                    choices = r.json()["choices"]
+                    text = choices[0]["message"]["content"]
+                except (KeyError, IndexError, TypeError) as e:
+                    raise RuntimeError(
+                        f"unexpected response shape from {chat_url} "
+                        f"(HTTP {r.status_code}): missing choices[0].message.content "
+                        f"({type(e).__name__}: {e}); body[:500]={r.text[:500]!r}"
+                    ) from e
             return _parse_layout_json(text)
-        except Exception as e:  # noqa: BLE001
-            last_err = e
+        except httpx.HTTPStatusError as e:
+            # 4xx/5xx — body usually says why (bad key, unknown model, ...).
+            last_err = RuntimeError(_summarize_http_error(e.response))
             if attempt < retries:
                 time.sleep(2 ** attempt)
                 continue
-    raise RuntimeError(f"VLM call failed after {retries+1} attempts: {last_err}")
+        except httpx.RequestError as e:
+            # Connection refused / DNS / timeout / TLS — no response body.
+            last_err = RuntimeError(
+                f"{type(e).__name__} contacting {chat_url}: {e}"
+            )
+            if attempt < retries:
+                time.sleep(2 ** attempt)
+                continue
+    raise RuntimeError(
+        f"VLM call to {chat_url} (model={model}) failed after "
+        f"{retries + 1} attempt(s): {last_err}"
+    )
 
 
 _JSON_FENCE = re.compile(r"```(?:json)?\s*(\{[\s\S]+?\})\s*```", re.MULTILINE)
@@ -226,6 +275,69 @@ def split_pdf_to_pages(pdf_path: Path, dst_dir: Path, dpi: int = 150) -> list[Pa
     finally:
         doc.close()
     return out
+
+
+def _mask_key(key: str) -> str:
+    """Show enough of an API key to confirm it was read, never the whole thing."""
+    if not key:
+        return "<unset>"
+    if len(key) <= 8:
+        return f"{key[:2]}… ({len(key)} chars)"
+    return f"{key[:4]}…{key[-4:]} ({len(key)} chars)"
+
+
+def _preflight(api_base: str, api_key: str, primary_model: str, fallback_model: str) -> None:
+    """Log the resolved config and probe the gateway once.
+
+    The probe (GET /v1/models) is advisory only — many OpenAI-compatible
+    gateways don't implement it, or gate it differently than chat. We log
+    the outcome but never abort; the per-page vlm_call() logs carry the
+    authoritative error. The point is to make 'wrong base URL' or 'key
+    rejected' obvious in the job log instead of buried under exit code 3.
+    """
+    chat_url, models_url = _resolve_endpoints(api_base)
+    print(
+        f"[preflight] base={api_base!r} -> chat={chat_url}\n"
+        f"[preflight] key={_mask_key(api_key)} models={primary_model!r}/{fallback_model!r}",
+        flush=True,
+    )
+    httpx = _lazy_httpx()
+    headers = {"Authorization": f"Bearer {api_key}"}
+    try:
+        with httpx.Client(timeout=10.0) as c:
+            r = c.get(models_url, headers=headers)
+        if r.status_code == 200:
+            # List model ids if the gateway returned them, so operators can
+            # spot a typo'd DECKWEAVER_LLM_MODEL against what's actually served.
+            try:
+                ids = [m.get("id") for m in r.json().get("data", []) if m.get("id")]
+                shown = ", ".join(ids[:20]) or "<empty list>"
+                if len(ids) > 20:
+                    shown += f", … (+{len(ids) - 20} more)"
+                print(f"[preflight] /v1/models OK — available: {shown}", flush=True)
+                if primary_model not in ids:
+                    print(
+                        f"[preflight] WARNING: primary model {primary_model!r} is NOT in the "
+                        f"list above — the chat call may 404.",
+                        flush=True,
+                    )
+            except (ValueError, TypeError):
+                print(f"[preflight] /v1/models OK (200) but body wasn't the expected JSON", flush=True)
+        else:
+            print(
+                f"[preflight] WARNING: GET {models_url} returned HTTP {r.status_code} "
+                f"(body[:300]={r.text[:300]!r}). Chat may still work if this gateway "
+                f"doesn't implement /v1/models — watch the per-page logs.",
+                flush=True,
+            )
+    except httpx.RequestError as e:
+        print(
+            f"[preflight] WARNING: could not reach {models_url} "
+            f"({type(e).__name__}: {e}). If this is a connectivity problem the "
+            f"chat calls will fail the same way — check the host/port and that "
+            f"the container can route to it.",
+            flush=True,
+        )
 
 
 def discover_page_images(src: Path) -> list[Path]:
@@ -306,6 +418,8 @@ def main() -> int:
         print("ERROR: DECKWEAVER_LLM_BASE and DECKWEAVER_LLM_KEY env vars are required",
               file=sys.stderr)
         return 2
+
+    _preflight(api_base, api_key, primary_model, fallback_model)
 
     pages = discover_page_images(src)
     selected = selected_pages(args.pages, len(pages))
