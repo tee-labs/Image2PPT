@@ -170,35 +170,35 @@ def vlm_call(
         ],
         "max_tokens": 8000,
         "temperature": 0.0,
+        # Stream is mandatory for vision models: a non-streamed response can
+        # take minutes to fully generate, and most gateways/reverse proxies
+        # (nginx, cloud LBs) return 504 after a 60-120s read-idle gap. With
+        # stream=true the server flushes SSE chunks as tokens arrive, keeping
+        # the connection alive for the whole generation.
+        "stream": True,
     }
     chat_url, _ = _resolve_endpoints(api_base)
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
+        "Accept": "text/event-stream",
     }
+    # Split timeouts: keep connect/write/pool tight, but give read a wide
+    # berth. With streaming, the read timeout is the max GAP between chunks,
+    # not total duration — VLMs emit a chunk every ~100ms, so 60s covers any
+    # reasonable think-time while still catching a truly hung connection.
+    timeouts = httpx.Timeout(connect=10.0, read=60.0, write=30.0, pool=10.0)
 
     last_err: Exception | None = None
     for attempt in range(retries + 1):
         try:
-            with httpx.Client(timeout=timeout) as c:
-                r = c.post(chat_url, json=body, headers=headers)
-                r.raise_for_status()
-                # Validate the response shape BEFORE parsing the layout so a
-                # malformed body produces a clear error instead of a bare
-                # KeyError deeper in _parse_layout_json.
-                try:
-                    choices = r.json()["choices"]
-                    text = choices[0]["message"]["content"]
-                except (KeyError, IndexError, TypeError) as e:
-                    raise RuntimeError(
-                        f"unexpected response shape from {chat_url} "
-                        f"(HTTP {r.status_code}): missing choices[0].message.content "
-                        f"({type(e).__name__}: {e}); body[:500]={r.text[:500]!r}"
-                    ) from e
+            text = _vlm_stream(
+                httpx, chat_url, body, headers, timeouts
+            )
             return _parse_layout_json(text)
-        except httpx.HTTPStatusError as e:
+        except _VlmHttpError as e:
             # 4xx/5xx — body usually says why (bad key, unknown model, ...).
-            last_err = RuntimeError(_summarize_http_error(e.response))
+            last_err = RuntimeError(e.detail)
             if attempt < retries:
                 time.sleep(2 ** attempt)
                 continue
@@ -210,10 +210,83 @@ def vlm_call(
             if attempt < retries:
                 time.sleep(2 ** attempt)
                 continue
+        except _VlmShapeError as e:
+            last_err = RuntimeError(e.detail)
+            if attempt < retries:
+                time.sleep(2 ** attempt)
+                continue
     raise RuntimeError(
         f"VLM call to {chat_url} (model={model}) failed after "
         f"{retries + 1} attempt(s): {last_err}"
     )
+
+
+class _VlmHttpError(Exception):
+    """Non-2xx HTTP status from the chat endpoint. Carries a ready log line."""
+    def __init__(self, detail: str):
+        super().__init__(detail)
+        self.detail = detail
+
+
+class _VlmShapeError(Exception):
+    """Stream completed but yielded no usable content."""
+    def __init__(self, detail: str):
+        super().__init__(detail)
+        self.detail = detail
+
+
+def _vlm_stream(
+    httpx,
+    chat_url: str,
+    body: dict[str, Any],
+    headers: dict[str, str],
+    timeouts: "httpx.Timeout",
+) -> str:
+    """POST chat_url with stream=true and reassemble the text from SSE chunks.
+
+    OpenAI-compatible servers emit lines like:
+        data: {"choices":[{"delta":{"content":"..."}}]}
+        ...
+        data: [DONE]
+    We concatenate every delta.content. Raises _VlmHttpError on a non-2xx
+    status (read from the streamed response so the body is available),
+    _VlmShapeError if the stream produced no content.
+    """
+    pieces: list[str] = []
+    with httpx.Client(timeout=timeouts) as c:
+        with c.stream("POST", chat_url, json=body, headers=headers) as r:
+            # Status check happens AFTER headers arrive but BEFORE we consume
+            # the body, so raise_for_status still has access to r.text for the
+            # error summary on a 4xx/5xx.
+            if r.status_code >= 400:
+                r.read()  # drain so .text is populated
+                raise _VlmHttpError(_summarize_http_error(r))
+            for line in r.iter_lines():
+                if not line or not line.startswith("data:"):
+                    continue
+                payload = line[len("data:"):].strip()
+                if payload == "[DONE]":
+                    break
+                try:
+                    obj = json.loads(payload)
+                except json.JSONDecodeError:
+                    # Some gateways emit keep-alive comments or stray lines;
+                    # skip anything that isn't valid JSON.
+                    continue
+                try:
+                    delta = obj["choices"][0]["delta"]
+                except (KeyError, IndexError, TypeError):
+                    continue
+                chunk = delta.get("content")
+                if chunk:
+                    pieces.append(chunk)
+    text = "".join(pieces).strip()
+    if not text:
+        raise _VlmShapeError(
+            f"stream from {chat_url} completed with empty content "
+            f"(no delta.content chunks received)"
+        )
+    return text
 
 
 _JSON_FENCE = re.compile(r"```(?:json)?\s*(\{[\s\S]+?\})\s*```", re.MULTILINE)
