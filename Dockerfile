@@ -120,7 +120,8 @@ RUN pip install \
         pytesseract \
         onnxruntime \
         huggingface_hub \
-        pymupdf
+        pymupdf \
+        httpx
 
 # ---- 拷贝仓库主体（代码 + scripts + 已打包的 models/font_classifier.onnx） ----
 COPY . /app

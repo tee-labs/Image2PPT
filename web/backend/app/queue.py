@@ -160,8 +160,12 @@ async def _process(job_id: str) -> None:
             job.current_page = job.page_count
         else:
             job.status = "failed"
+            # Name the script that actually ran so the error points at the
+            # right pipeline (convert.py for local OCR, convert_vlm.py for
+            # the cloud VLM profile).
+            script = "convert_vlm.py" if s.use_vlm else "convert.py"
             job.error_msg = (
-                f"convert.py exited with code {code}"
+                f"{script} exited with code {code}"
                 if not pptx.exists()
                 else f"slides.pptx missing (exit {code})"
             )
