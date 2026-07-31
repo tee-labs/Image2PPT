@@ -379,8 +379,20 @@ class Builder:
 
     def add_image(self, slide, el: dict[str, Any]) -> None:
         left, top, width, height = el["box"]
+        path = self.image_path(el["path"])
+        # The layout writer emits an image element per detected region
+        # regardless of whether the asset PNG actually landed on disk
+        # (a crop can be dropped as empty, or cv2.imwrite can fail
+        # silently). A single missing file used to abort the whole deck
+        # via add_picture -> FileNotFoundError. Skip the element with a
+        # warning instead, mirroring add_table's tolerance for bad
+        # geometry — the rest of the slide still builds.
+        if not Path(path).exists():
+            sys.stderr.write(
+                f"WARNING: image asset not found, skipping: {path}\n")
+            return
         pic = slide.shapes.add_picture(
-            str(self.image_path(el["path"])),
+            str(path),
             self.x(left),
             self.y(top),
             width=self.w(width),
