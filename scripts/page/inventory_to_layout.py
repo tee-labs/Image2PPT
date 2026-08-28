@@ -143,7 +143,7 @@ from layout.text_units import (  # noqa: E402, F401
 from layout.zorder import topo_sort_by_containment  # noqa: E402, F401
 
 
-ENABLE_NATIVE_OUTLINE_SHAPES = False
+ENABLE_NATIVE_OUTLINE_SHAPES = True
 
 
 def parse_args() -> argparse.Namespace:
