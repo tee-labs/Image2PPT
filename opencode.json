@@ -1,0 +1,48 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "glm": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "glm",
+      "options": {
+        "baseURL": "https://open.bigmodel.cn/api/coding/paas/v4",
+        "headers": {
+          "Authorization": "Bearer {env:GLM_API_KEY}"
+        }
+      },
+      "models": {
+        "glm-5-turbo": {
+          "name": "glm-5-turbo"
+        },
+        "glm-5.1": {
+          "name": "glm-5.1"
+        },
+        "glm-5.2": {
+          "name": "glm-5.2"
+        },
+        "glm-5.3": {
+          "name": "glm-5.3"
+        },
+        "glm-5.3-flash": {
+          "name": "glm-5.3-flash"
+        }
+      }
+    },
+    "zen": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "zen",
+      "options": {
+        "baseURL": "https://opencode.ai/zen/v1",
+        "headers": {
+          "Authorization": "Bearer {env:OPENCODE_API_KEY}"
+        }
+      },
+      "models": {
+        "deepseek-v4-flash-free": {
+          "name": "deepseek-v4-flash-free"
+        }
+      }
+    }
+  },
+  "plugin": ["@dietrichgebert/ponytail"]
+}
