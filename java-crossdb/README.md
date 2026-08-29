@@ -7,13 +7,14 @@
 
 自包含子项目，与本仓库其他部分无关，可随时拆成独立仓库。
 
-## 运行自检（两个内存 H2 库，免安装）
+## 运行自检与单元测试
 
 ```bash
-mvn -q compile exec:java -Dexec.mainClass=com.example.crossdb.Main
+mvn test                                                     # 20 个 JUnit 单元测试
+mvn -q compile exec:java -Dexec.mainClass=com.example.crossdb.Main   # 端到端自检
 ```
 
-自检覆盖：跨库 JOIN+GROUP BY、Bind Join 的 IN 下推与多批次并发拉取、行数熔断（恰好等于阈值放行 / 超限拒绝执行）、fetchSize 流式拉取。加 `-Dcrossdb.debug=true` 可打印物理计划与规则匹配过程。
+单元测试覆盖：`Guarded` 熔断（恰好等于阈值放行 / 超限拒绝 / fetchSize 与 maxRows 语句配置）、`BindJoinExec` 分批（batch=1 多批次 / 去重合批 / NULL key 跳过 / 空外表不下发查询 / SQL 失败传播）、`CrossDb` 端到端（跨库 JOIN+GROUP BY、Bind Join 的 IN 下推替换内表全量扫描、复合连接条件与 LEFT JOIN 回退原生计划、同库 JOIN 下推、行数熔断、fetchSize 传播、非法配置/SQL 拒绝）。自检 Main 覆盖同场景的运行时串联验证。加 `-Dcrossdb.debug=true` 可打印物理计划与规则匹配过程。
 
 ## 查询特性
 
