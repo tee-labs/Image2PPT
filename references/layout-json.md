@@ -75,6 +75,8 @@ Use images for extracted logos, icons, background ornaments, line art, photos, a
 
 Supported shapes include `rect`, `rounded_rect`, `oval`, `diamond`, `triangle`, and `trapezoid`.
 
+Simple solid geometry (circles, rounded rects, rects — card frames, circular badges, colour chips) is emitted as native shapes; photos, gradients, and complex icons stay as image crops. Card-frame shapes render before images; solid chip/badge shapes render after images (their pixels were inpainted out of the parent card) and before text.
+
 ### Line
 
 ```json
