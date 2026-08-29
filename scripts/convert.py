@@ -10,6 +10,9 @@ import sys
 import time
 from pathlib import Path
 
+import cv2
+import numpy as np
+
 from image_sources import (
     SUPPORTED_IMAGE_EXTENSIONS,
     discover_page_images,
@@ -137,7 +140,17 @@ def copy_as_pages(files: list[Path], dest_dir: Path) -> Path:
     dest_dir.mkdir(parents=True, exist_ok=True)
     for i, src in enumerate(files, 1):
         dst = dest_dir / f"page_{i:02d}{src.suffix.lower()}"
-        shutil.copy2(src, dst)
+        # Transparent PNG/WebP inputs flatten to black under cv2's
+        # alpha-dropping imread, poisoning OCR and every detector
+        # downstream. Composite onto white — slides are white-canvas.
+        img = cv2.imread(str(src), cv2.IMREAD_UNCHANGED)
+        if img is not None and img.ndim == 3 and img.shape[2] == 4:
+            alpha = img[:, :, 3:4].astype(np.float32) / 255.0
+            comp = (img[:, :, :3].astype(np.float32) * alpha
+                    + 255.0 * (1.0 - alpha)).astype(np.uint8)
+            cv2.imwrite(str(dst), comp)
+        else:
+            shutil.copy2(src, dst)
     return dest_dir
 
 

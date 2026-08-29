@@ -63,26 +63,72 @@ def _rounded_square(size: int = 96, radius: int = 32,
 
 class ClassifyFilledShapeTests(unittest.TestCase):
     def test_solid_circle_is_oval(self) -> None:
-        kind, fill, line, radius = classify_filled_shape(_solid_circle())
+        kind, fill, line, radius, line_px = classify_filled_shape(
+            _solid_circle())
         self.assertEqual(kind, "oval")
         self.assertEqual(radius, 0.0)
+        self.assertEqual(line_px, 0.0)
         self.assertEqual(fill, "#2878C8")
         self.assertTrue(line.startswith("#"))
 
     def test_solid_square_is_rect(self) -> None:
         img = np.full((80, 80, 3), 255, dtype=np.uint8)
         cv2.rectangle(img, (0, 0), (79, 79), RED_BGR, -1)
-        kind, fill, _line, radius = classify_filled_shape(img)
+        kind, fill, _line, radius, _line_px = classify_filled_shape(img)
         self.assertEqual(kind, "rect")
         self.assertEqual(radius, 0.0)
         self.assertEqual(fill, "#B43C3C")
 
     def test_rounded_square_is_round_rect(self) -> None:
-        kind, _fill, _line, radius = classify_filled_shape(
+        kind, _fill, _line, radius, _line_px = classify_filled_shape(
             _rounded_square(radius=32))
         self.assertEqual(kind, "round_rect")
         self.assertGreaterEqual(radius, 0.08)
         self.assertLessEqual(radius, 0.5)
+
+    def test_thin_ring_is_transparent_oval(self) -> None:
+        # The issue's uploaded asset: a thin light-gray circle outline
+        # (~86x88) on a white background.
+        img = _white(96)
+        cv2.circle(img, (48, 48), 44, (224, 224, 224), 4)
+        kind, fill, line, radius, line_px = classify_filled_shape(img)
+        self.assertEqual(kind, "oval")
+        self.assertIsNone(fill)          # transparent interior
+        self.assertEqual(line, "#E0E0E0")
+        self.assertEqual(radius, 0.0)
+        self.assertGreaterEqual(line_px, 2.0)
+        self.assertLessEqual(line_px, 12.0)
+
+    def test_donut_ring_is_transparent_oval(self) -> None:
+        img = _white(120)
+        cv2.circle(img, (60, 60), 56, BLUE_BGR, -1)
+        cv2.circle(img, (60, 60), 28, (255, 255, 255), -1)
+        kind, fill, line, _radius, line_px = classify_filled_shape(img)
+        self.assertEqual(kind, "oval")
+        self.assertIsNone(fill)
+        self.assertEqual(line, "#2878C8")
+        self.assertGreaterEqual(line_px, 10.0)
+
+    def test_gradient_ring_rejected(self) -> None:
+        img = _white(96)
+        for t in range(88):
+            col = (int(40 + 2 * t), int(120 + 0.5 * t), 200 - t)
+            cv2.circle(img, (48, 48), 44, col, 1)
+        self.assertIsNone(classify_filled_shape(img))
+
+    def test_broken_ring_rejected(self) -> None:
+        img = _white(96)
+        cv2.circle(img, (48, 48), 44, BLUE_BGR, 4)
+        cv2.rectangle(img, (40, 0), (56, 20), (255, 255, 255), -1)  # notch
+        self.assertIsNone(classify_filled_shape(img))
+
+    def test_offcentre_hole_rejected(self) -> None:
+        # Filled disc with an off-centre punched hole: not a clean ring,
+        # and its interior isn't uniform → stays a PNG.
+        img = _white(120)
+        cv2.circle(img, (60, 60), 56, BLUE_BGR, -1)
+        cv2.circle(img, (40, 40), 20, (255, 255, 255), -1)
+        self.assertIsNone(classify_filled_shape(img))
 
     def test_gradient_rect_rejected(self) -> None:
         img = np.zeros((60, 160, 3), dtype=np.uint8)
@@ -106,13 +152,13 @@ class ClassifyFilledShapeTests(unittest.TestCase):
     def test_circle_on_tinted_card(self) -> None:
         img = np.full((96, 96, 3), (235, 245, 250), dtype=np.uint8)
         cv2.circle(img, (48, 48), 46, BLUE_BGR, -1)
-        kind, fill, _line, _radius = classify_filled_shape(img)
+        kind, fill, _line, _radius, _line_px = classify_filled_shape(img)
         self.assertEqual(kind, "oval")
         self.assertEqual(fill, "#2878C8")
 
     def test_full_bleed_square_is_rect(self) -> None:
         img = np.full((70, 110, 3), RED_BGR, dtype=np.uint8)
-        kind, _fill, _line, _radius = classify_filled_shape(img)
+        kind, _fill, _line, _radius, _line_px = classify_filled_shape(img)
         self.assertEqual(kind, "rect")
 
     def test_tiny_crop_rejected(self) -> None:
@@ -131,6 +177,21 @@ class ClassifyFilledShapeTests(unittest.TestCase):
         img = np.full((200, 300, 3), (238, 245, 250), dtype=np.uint8)
         cv2.rectangle(img, (0, 0), (299, 199), (200, 200, 200), 1)
         self.assertIsNone(classify_filled_shape(img))
+
+    def test_user_uploaded_ring_asset(self) -> None:
+        """The exact 86x88 RGBA asset from the issue, composited on
+        white the way convert.py ingest now does."""
+        path = Path(__file__).parent / "fixtures" / "issue5_ring.png"
+        if not path.exists():
+            self.skipTest("fixture not present")
+        rgba = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
+        alpha = rgba[:, :, 3:4].astype(np.float32) / 255.0
+        comp = (rgba[:, :, :3].astype(np.float32) * alpha
+                + 255.0 * (1.0 - alpha)).astype(np.uint8)
+        kind, fill, line, _radius, line_px = classify_filled_shape(comp)
+        self.assertEqual(kind, "oval")
+        self.assertIsNone(fill)
+        self.assertGreater(line_px, 1.0)
 
 
 def _ring_mask(size_h: int, size_w: int, center: tuple[int, int],
@@ -216,6 +277,17 @@ def _write_slide(path: Path) -> None:
     cv2.imwrite(str(path), img)
 
 
+def _write_fg_mask(path: Path, img: np.ndarray,
+                   bbox: tuple[int, int, int, int]) -> None:
+    """Real-run style mask: foreground pixels opaque inside the bbox."""
+    mask = np.zeros(img.shape[:2], dtype=np.uint8)
+    x1, y1, x2, y2 = bbox
+    crop = img[y1:y2, x1:x2]
+    fg = np.abs(crop.astype(int) - 255).max(axis=2) > 14
+    mask[y1:y2, x1:x2] = (fg * 255).astype(np.uint8)
+    cv2.imwrite(str(path), mask)
+
+
 def _write_ring_mask(path: Path) -> None:
     cv2.imwrite(str(path), _ring_mask(540, 960, (480, 140), 50))
 
@@ -225,19 +297,30 @@ class BuilderNativeShapeTests(unittest.TestCase):
         from layout.builder import LayoutBuilder
         src = td / "page_01.png"
         _write_slide(src)
-        mask_path = td / "masks" / "v003.mask.png"
-        mask_path.parent.mkdir(exist_ok=True)
+        masks = td / "masks"
+        masks.mkdir(exist_ok=True)
+        slide = cv2.imread(str(src))
+        # Real runs write per-element masks; the builder must classify
+        # the crop BEFORE the masked path can swallow it as a PNG.
+        for el_id, bbox in (("v000", (80, 80, 176, 176)),
+                            ("v001", (220, 300, 320, 400)),
+                            ("v002", (600, 300, 700, 400))):
+            _write_fg_mask(masks / f"{el_id}.mask.png", slide, bbox)
+        mask_path = masks / "v003.mask.png"
         _write_ring_mask(mask_path)
         inventory = [
             {"id": "v000", "type": "image",
              "bbox": [80, 80, 176, 176],
-             "source": "cleaned", "role": "container"},
+             "source": "cleaned", "role": "container",
+             "mask_path": str(masks / "v000.mask.png")},
             {"id": "v001", "type": "image",
              "bbox": [220, 300, 320, 400],
-             "source": "source", "role": "internal"},
+             "source": "source", "role": "internal",
+             "mask_path": str(masks / "v001.mask.png")},
             {"id": "v002", "type": "image",
              "bbox": [600, 300, 700, 400],
-             "source": "source", "role": "internal"},
+             "source": "source", "role": "internal",
+             "mask_path": str(masks / "v002.mask.png")},
             {"id": "v003", "type": "image",
              "bbox": [430, 90, 530, 190],
              "source": "cleaned", "role": "outline",
@@ -303,6 +386,70 @@ class BuilderNativeShapeTests(unittest.TestCase):
             self.assertEqual(layout["elements"][1]["name"], "v002")
             self.assertEqual(layout["elements"][2]["name"], "v000")
             self.assertEqual(layout["elements"][3]["name"], "v001")
+
+    def test_roleless_ring_asset_becomes_native_oval(self) -> None:
+        """The issue's exact upload: a thin light-gray circle outline,
+        inventoried with role=None (it is neither card nor connector).
+        Even with a mask present it must lift to a transparent-fill
+        native oval, not a flattened PNG."""
+        from layout.builder import LayoutBuilder
+        with tempfile.TemporaryDirectory() as td_s:
+            td = Path(td_s)
+            src = td / "page_01.png"
+            img = np.full((540, 960, 3), 255, dtype=np.uint8)
+            cv2.circle(img, (200, 150), 42, (224, 224, 224), 4)
+            cv2.imwrite(str(src), img)
+            masks = td / "masks"
+            masks.mkdir()
+            _write_fg_mask(masks / "v000.mask.png", img, (154, 104, 246, 196))
+            inventory = [
+                {"id": "v000", "type": "image",
+                 "bbox": [154, 104, 246, 196],
+                 "source": "cleaned", "role": None,
+                 "mask_path": str(masks / "v000.mask.png")},
+            ]
+            inv_path = td / "inventory.json"
+            inv_path.write_text(json.dumps(inventory), encoding="utf-8")
+            args = type("Args", (), {
+                "inventory": str(inv_path),
+                "source": str(src),
+                "cleaned": str(src),
+                "out_assets_dir": str(td / "assets" / "page_01"),
+                "asset_prefix": "assets/page_01",
+                "out_manifest": str(td / "m.json"),
+                "out_layout": str(td / "l.json"),
+                "slide_width_in": None,
+                "slide_height_in": 7.5,
+            })()
+            builder = LayoutBuilder(args)
+            builder.build()
+            builder.write()
+            self.assertEqual(len(builder.front_shape_elements), 1)
+            shape = builder.front_shape_elements[0]
+            self.assertEqual(shape["shape"], "oval")
+            self.assertEqual(shape["fill"], "transparent")
+            self.assertEqual(shape["line"], "#E0E0E0")
+            self.assertEqual(shape["box"], [154, 104, 92, 92])
+            # ring is ~4px @ 540-tall on a 7.5in slide → ~3pt stroke
+            self.assertGreaterEqual(shape["line_width"], 2.0)
+            self.assertEqual(builder.image_elements, [])
+
+    def test_rgba_source_composited_on_white_at_ingest(self) -> None:
+        """convert.copy_as_pages must composite transparent PNGs onto
+        white — cv2's alpha-dropping imread would show black."""
+        from convert import copy_as_pages
+        with tempfile.TemporaryDirectory() as td_s:
+            td = Path(td_s)
+            rgba = np.zeros((40, 40, 4), dtype=np.uint8)
+            rgba[:, :, :3] = (40, 120, 200)
+            rgba[10:30, 10:30, 3] = 255
+            src = td / "in.png"
+            cv2.imwrite(str(src), rgba)
+            out_dir = copy_as_pages([src], td / "pages")
+            page = cv2.imread(str(next(out_dir.glob("page_*.png"))))
+            self.assertEqual(page.shape, (40, 40, 3))       # alpha dropped
+            self.assertTrue((page[0, 0] >= 250).all())       # white bg
+            self.assertAlmostEqual(int(page[20, 20][0]), 40, delta=2)
 
     def test_layout_builds_pptx_with_native_autoshapes(self) -> None:
         from pptx import Presentation

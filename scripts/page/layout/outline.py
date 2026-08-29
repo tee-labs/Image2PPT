@@ -7,8 +7,8 @@ exists), these helpers decide whether to:
   * split a tall outline into multiple stacked sub-cards.
 
 The same module also hosts the solid-primitive classifier that lifts
-small filled circles / rects (badges, colour chips) out of the PNG
-crop path into editable native shapes.
+small filled circles / rects (badges, colour chips) and thin circle
+rings out of the PNG crop path into editable native shapes.
 """
 from __future__ import annotations
 
@@ -187,16 +187,98 @@ def _corner_fill_fraction(filled: np.ndarray, c_frac: float = 0.12) -> float:
     return max(float(p.sum()) / float(c * c) for p in patches)
 
 
+def _dominant_color(crop_bgr: np.ndarray, fg: np.ndarray) -> np.ndarray:
+    """Median BGR of the dominant quantised colour inside ``fg``."""
+    pixels = crop_bgr[fg].reshape(-1, 3)
+    if len(pixels) == 0:
+        return np.zeros(3, dtype=np.int16)
+    quant = pixels.astype(np.uint16) // 16
+    keys, counts = np.unique(quant, axis=0, return_counts=True)
+    key = keys[int(np.argmax(counts))]
+    close = pixels[(quant == key).all(axis=1)]
+    if len(close) == 0:
+        return np.median(pixels, axis=0).astype(np.int16)
+    return np.median(close, axis=0).astype(np.int16)
+
+
+def _ring_candidate(crop_bgr: np.ndarray, fg: np.ndarray, bg: np.ndarray):
+    """Classify a sparse annulus silhouette (circle ring / donut).
+
+    Covers thin circle outlines (badge rings, decorative circles) whose
+    coverage is far below the filled-solid threshold. Returns
+    ``("oval", None, line_hex, 0.0, thickness_px)`` — fill None means
+    transparent — or None when the silhouette is not a single centered
+    ring (multi-colour, off-centre hole, arcs, scattered fragments).
+    """
+    h, w = fg.shape[:2]
+    if abs(w / float(h) - 1.0) > 0.33:
+        return None
+    fg_u8 = fg.astype(np.uint8)
+    n_labels, labels = cv2.connectedComponents(fg_u8, 8)
+    if n_labels - 1 == 0:
+        return None
+    counts = np.bincount(labels.ravel())[1:]
+    # Anti-aliased rings often shatter into hairline fragments; require
+    # one dominant component instead of a perfect single contour.
+    if int(counts.max()) < 0.85 * int(fg.sum()):
+        return None  # scattered fragments, not a ring
+    # Bridge hairline gaps so the interior hole survives segmentation
+    # noise; genuinely broken rings (arcs, notches) stay open and fail
+    # the hole test below.
+    closed = cv2.morphologyEx(fg_u8, cv2.MORPH_CLOSE,
+                              np.ones((3, 3), np.uint8))
+    # Interior hole: background component not touching the crop border.
+    inv = (~closed.astype(bool)).astype(np.uint8)
+    n_inv, inv_labels = cv2.connectedComponents(inv, 4)
+    border_labels = set(inv_labels[0, :].tolist()) \
+        | set(inv_labels[-1, :].tolist()) \
+        | set(inv_labels[:, 0].tolist()) \
+        | set(inv_labels[:, -1].tolist())
+    hole = np.isin(
+        inv_labels, [i for i in range(1, n_inv) if i not in border_labels])
+    hole_px = int(hole.sum())
+    fg_px = int(fg.sum())
+    if hole_px < max(80, int(0.15 * fg_px)):
+        return None  # filled solid or C-shape
+    ys, xs = np.nonzero(fg)
+    hys, hxs = np.nonzero(hole)
+    cx = float(xs.mean()); cy = float(ys.mean())
+    if np.hypot(hxs.mean() - cx, hys.mean() - cy) > 0.18 * min(w, h):
+        return None  # off-centre hole (C shapes, crescents)
+    r = np.hypot(xs - cx, ys - cy)
+    p05, p50, p95 = np.percentile(r, [5, 50, 95])
+    if p50 < 8.0 or (p95 - p05) / max(1.0, p50) > 0.65:
+        return None  # not a ring band (arcs, half-discs, blobs)
+    # Stroke colour: thin rings carry a wide anti-alias halo that blends
+    # toward the background, so sample only the stroke CORE — the ring
+    # pixels farthest from bg — and require the core itself to be one
+    # uniform colour (gradient rings keep their PNG).
+    px_all = crop_bgr[fg].reshape(-1, 3).astype(np.int16)
+    dist_bg = np.abs(px_all - bg[None, :]).max(axis=1)
+    core = px_all[dist_bg >= np.percentile(dist_bg, 60)]
+    if len(core) < 12:
+        return None
+    line_bgr = np.median(core, axis=0).astype(np.int16)
+    spread = np.abs(core - line_bgr[None, :]).max(axis=1)
+    if float((spread <= 36).mean()) < 0.75:
+        return None
+    return ("oval", None, _bgr_to_hex(line_bgr), 0.0,
+            float(np.percentile(r, 95) - np.percentile(r, 5)))
+
+
 def classify_filled_shape(crop_bgr: np.ndarray):
     """Classify a solid geometric-primitive crop into a native PPT shape.
 
     ``crop_bgr`` must be the text-erased, children-inpainted bbox crop of
-    a ``container`` / ``internal`` element. Returns
-    ``(shape, fill_hex, line_hex, radius)`` when the crop is a clean
-    solid ellipse / rounded rect / rect, so the element can be emitted
-    as an editable native shape instead of a flattened PNG. Returns None
-    for gradients, photos, multi-colour content, or unmatched
-    silhouettes — those stay on the PNG path unchanged.
+    an image element. Returns
+    ``(shape, fill_hex, line_hex, radius, line_px)`` when the crop is a
+    clean solid ellipse / rounded rect / rect (``line_px`` 0.0; the
+    builder keeps its fixed border width), or a ring annulus
+    (``fill_hex`` None → transparent, ``line_px`` ring thickness in
+    source pixels), so the element can be emitted as an editable native
+    shape instead of a flattened PNG. Returns None for gradients,
+    photos, multi-colour content, or unmatched silhouettes — those stay
+    on the PNG path unchanged.
     """
     h, w = crop_bgr.shape[:2]
     if h < 12 or w < 12:
@@ -218,7 +300,15 @@ def classify_filled_shape(crop_bgr: np.ndarray):
         fg = (((gray < 250) & (diff_white > 6))
               | ((hsv[:, :, 1] > 10) & (diff_white > 4)))
         if float(fg.mean()) < 0.30:
-            return None
+            # Sparse silhouettes (thin rings) can't reach the filled
+            # branches, but the ring branch may still claim them.
+            if float(fg.mean()) < 0.02:
+                return None
+            return _ring_candidate(crop_bgr, fg, bg)
+    if float(fg.mean()) < 0.55:
+        ring = _ring_candidate(crop_bgr, fg, bg)
+        if ring is not None:
+            return ring
     # Only clearly visible solids qualify: ghost-pale blocks (dashed
     # photo placeholders, faint tints barely off the panel colour) lose
     # their border detail as a flat native fill, so keep them as PNGs.
@@ -242,11 +332,7 @@ def classify_filled_shape(crop_bgr: np.ndarray):
     pixels = crop_bgr[fg].reshape(-1, 3)
     if len(pixels) < 24:
         return None
-    quant = pixels.astype(np.uint16) // 16
-    keys, counts = np.unique(quant, axis=0, return_counts=True)
-    key = keys[int(np.argmax(counts))]
-    close = pixels[(quant == key).all(axis=1)]
-    fill_bgr = np.median(close, axis=0).astype(np.int16)
+    fill_bgr = _dominant_color(crop_bgr, fg)
     spread = np.abs(pixels.astype(np.int16) - fill_bgr[None, :]).max(axis=1)
     if float((spread <= 30).mean()) < 0.80:
         return None  # gradient / photo / multi-colour content
@@ -273,15 +359,15 @@ def classify_filled_shape(crop_bgr: np.ndarray):
     # r/s in [0, 0.5]: corner(c=0.12) falls monotonically 1.0 -> 0.0
     # while cov falls 1.0 -> 0.785 (circle). Mid gaps fall back to PNG.
     if cov >= 0.90 and corner >= 0.55:
-        return ("rect", fill_hex, line_hex, 0.0)
+        return ("rect", fill_hex, line_hex, 0.0, 0.0)
     if cov >= 0.84 and corner <= 0.45:
         # Corner radius from the area lost to rounding:
         # 1 - cov = (4 - pi) * (r / side)^2 for a near-square shape.
         radius = math.sqrt(max(0.0, 1.0 - cov) / (4.0 - math.pi))
         radius = min(0.5, max(0.08, radius))
-        return ("round_rect", fill_hex, line_hex, round(radius, 3))
+        return ("round_rect", fill_hex, line_hex, round(radius, 3), 0.0)
     if 0.60 <= cov <= 0.835 and corner <= 0.03:
-        return ("oval", fill_hex, line_hex, 0.0)
+        return ("oval", fill_hex, line_hex, 0.0, 0.0)
     return None
 
 

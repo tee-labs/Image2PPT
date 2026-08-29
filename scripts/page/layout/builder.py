@@ -573,6 +573,7 @@ class LayoutBuilder:
             or role == "preserve_visual_icon"
             or implicit_cv2_icon
         )
+        bx1, by1, bx2, by2 = int(x1), int(y1), int(x2), int(y2)
         x1, y1, x2, y2 = _pad_icon_bbox(
             (x1, y1, x2, y2), src_img, self.text_boxes, role,
             allow_text_overlap=text_erased_crop)
@@ -596,6 +597,36 @@ class LayoutBuilder:
                 self._emit_split_outline_rows(el, split_boxes,
                                               src_img, sparse_visual)
                 return
+        # Solid uniform primitives (standalone colour chips, numbered
+        # badges, small filled rects) and thin circle rings become
+        # editable native shapes. This must run BEFORE the masked emit
+        # below: the inventory nearly always writes per-element masks,
+        # and the masked path would otherwise swallow every candidate
+        # as a flattened PNG. The classifier is its own safety valve —
+        # photos, gradients and complex icons return None and fall
+        # through to the unchanged PNG paths.
+        if (role not in {"outline", "background"}
+                and self._enable_native_outline):
+            classified = classify_filled_shape(crop)
+            if classified is not None:
+                shape_kind, fill_hex, line_hex, radius, line_px = classified
+                shape_el = {
+                    "type": "shape", "name": el["id"], "shape": shape_kind,
+                    # The tight inventory bbox, not the icon-padded crop
+                    # box: padding only gives the classifier a clean
+                    # background margin.
+                    "box": [bx1, by1, bx2 - bx1, by2 - by1],
+                    # Ring annuli emit a transparent fill (layout-json
+                    # contract) so only the circle outline is drawn.
+                    "fill": fill_hex or "transparent",
+                    "line": line_hex,
+                    "line_width": 0.9, "radius": radius,
+                }
+                if line_px > 0:
+                    shape_el["line_width"] = max(
+                        0.75, line_px * self.pt_per_px)
+                self.front_shape_elements.append(shape_el)
+                return
         if has_mask and not keep_outline_full_crop:
             if self._emit_masked_image(el, asset_name, mask_path, src_img,
                                        crop, contained_outline_boxes,
@@ -604,21 +635,6 @@ class LayoutBuilder:
                 return
         if self._is_empty_asset(crop, None, sparse_ok=sparse_visual):
             return
-        # Solid uniform primitives (standalone colour chips, numbered
-        # badges, small filled rects) become editable native shapes.
-        # Everything else — photos, gradients, complex icons — keeps the
-        # PNG path below.
-        if role in {"container", "internal"} and self._enable_native_outline:
-            classified = classify_filled_shape(crop)
-            if classified is not None:
-                shape_kind, fill_hex, line_hex, radius = classified
-                self.front_shape_elements.append({
-                    "type": "shape", "name": el["id"], "shape": shape_kind,
-                    "box": [int(x1), int(y1), int(x2 - x1), int(y2 - y1)],
-                    "fill": fill_hex, "line": line_hex,
-                    "line_width": 0.9, "radius": radius,
-                })
-                return
         self._emit_role_specific_crop(el, asset_name, crop,
                                       x1, y1, x2, y2,
                                       scrub_icon_text)
