@@ -43,6 +43,8 @@ from layout.outline import (  # noqa: E402
     _sample_card_fill_color,
     _sample_outline_color,
     _split_filled_outline_rows,
+    classify_filled_shape,
+    classify_outline_ring,
 )
 from layout.text_emit import _emit_text_element_record  # noqa: E402
 from layout.zorder import topo_sort_by_containment  # noqa: E402
@@ -105,7 +107,12 @@ class LayoutBuilder:
 
         self.manifest_assets: list[dict] = []
         self.image_elements: list[dict] = []
+        # Back shapes (card frames) render before images; front shapes
+        # (solid chips/badges lifted to native geometry) render after
+        # images so they sit above the parent card PNG that had them
+        # inpainted out, and below the editable text.
         self.shape_elements: list[dict] = []
+        self.front_shape_elements: list[dict] = []
         self.text_elements: list[dict] = []
         self.text_boxes = [
             tuple(int(v) for v in el["bbox"])
@@ -521,25 +528,32 @@ class LayoutBuilder:
         has_mask = bool(mask_path and Path(mask_path).exists())
         if role == "outline" and self._outline_carried_by_large_parent(el):
             return
-        native_outline = (
-            self._enable_native_outline
-            and role == "outline"
-            and _outline_should_be_native_shape(
-                (int(x1), int(y1), int(x2), int(y2)))
-            and not self._outline_has_top_badge(el)
-        )
-        if native_outline:
+        # Wide/tall card outlines go straight to round_rect; near-square
+        # ones must first prove they are a circle ring (oval) or a
+        # straight-sided ring (round_rect) — otherwise keep the PNG.
+        ring_shape: tuple[str, float] | None = None
+        if (self._enable_native_outline and role == "outline"
+                and not self._outline_has_top_badge(el)):
+            if _outline_should_be_native_shape(
+                    (int(x1), int(y1), int(x2), int(y2))):
+                ring_shape = ("round_rect", 0.08)
+            else:
+                ring_shape = classify_outline_ring(
+                    self.cleaned,
+                    (int(x1), int(y1), int(x2), int(y2)), mask_path)
+        if ring_shape:
             if self._is_redundant_multi_card_outline(el):
                 return
+            shape_kind, radius = ring_shape
             line_color = _sample_outline_color(
                 self.source, (int(x1), int(y1), int(x2), int(y2)), mask_path)
             fill_color = _sample_card_fill_color(
                 self.source, (int(x1), int(y1), int(x2), int(y2)))
             self.shape_elements.append({
-                "type": "shape", "name": el["id"], "shape": "round_rect",
+                "type": "shape", "name": el["id"], "shape": shape_kind,
                 "box": [int(x1), int(y1), int(x2 - x1), int(y2 - y1)],
                 "fill": fill_color, "line": line_color,
-                "line_width": 0.9, "radius": 0.08,
+                "line_width": 0.9, "radius": radius,
             })
             return
         text_erased_crop = (
@@ -590,6 +604,21 @@ class LayoutBuilder:
                 return
         if self._is_empty_asset(crop, None, sparse_ok=sparse_visual):
             return
+        # Solid uniform primitives (standalone colour chips, numbered
+        # badges, small filled rects) become editable native shapes.
+        # Everything else — photos, gradients, complex icons — keeps the
+        # PNG path below.
+        if role in {"container", "internal"} and self._enable_native_outline:
+            classified = classify_filled_shape(crop)
+            if classified is not None:
+                shape_kind, fill_hex, line_hex, radius = classified
+                self.front_shape_elements.append({
+                    "type": "shape", "name": el["id"], "shape": shape_kind,
+                    "box": [int(x1), int(y1), int(x2 - x1), int(y2 - y1)],
+                    "fill": fill_hex, "line": line_hex,
+                    "line_width": 0.9, "radius": radius,
+                })
+                return
         self._emit_role_specific_crop(el, asset_name, crop,
                                       x1, y1, x2, y2,
                                       scrub_icon_text)
@@ -751,6 +780,7 @@ class LayoutBuilder:
             "background": estimate_canvas_hex(self.source),
             "elements": (self.shape_elements
                          + self.image_elements
+                         + self.front_shape_elements
                          + self.text_elements),
         }
         Path(self.args.out_layout).parent.mkdir(parents=True, exist_ok=True)
@@ -760,7 +790,8 @@ class LayoutBuilder:
         print(json.dumps({
             "text_elements": len(self.text_elements),
             "image_elements": len(self.image_elements),
-            "shape_elements": len(self.shape_elements),
+            "shape_elements": (len(self.shape_elements)
+                               + len(self.front_shape_elements)),
             "manifest": str(self.args.out_manifest),
             "layout": str(self.args.out_layout),
         }, ensure_ascii=False))
