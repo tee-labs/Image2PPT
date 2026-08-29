@@ -30,7 +30,8 @@ import java.util.Set;
  * 替代「内表全量拉取 + 本地 hash join」。
  *
  * <p>在 Enumerable 阶段的 Join 上触发（子节点已是具体 Enumerable 节点）。
- * 支持 INNER/LEFT/RIGHT（RIGHT 交换内外侧）/FULL（外表耗尽后 NOT IN 反连接补内表）；
+ * 支持 INNER/LEFT/RIGHT（RIGHT 交换内外侧）/FULL（外表耗尽后 NOT IN 反连接补内表）/
+ * SEMI/ANTI（EXISTS/NOT EXISTS 去相关后的半连接，仅输出外表行）；
  * 连接条件须全部为跨侧等值对（支持多列复合键，无残余条件），
  * 内表可整体下推为一条 JDBC SQL，左右来自不同库；其余情况维持 Calcite 原生计划。
  * 多列 key 在 H2/MySQL/PostgreSQL/Oracle 用 tuple-IN，其余方言降级为 OR 组。
@@ -55,9 +56,7 @@ class BindJoinRule extends RelOptRule {
 
   @Override public boolean matches(RelOptRuleCall call) {
     return call.rel(0) instanceof Join join
-        && join.getTraitSet().getConvention() == EnumerableConvention.INSTANCE
-        && (join.getJoinType() == JoinRelType.INNER || join.getJoinType() == JoinRelType.LEFT
-            || join.getJoinType() == JoinRelType.RIGHT || join.getJoinType() == JoinRelType.FULL);
+        && join.getTraitSet().getConvention() == EnumerableConvention.INSTANCE;
   }
 
   @Override public void onMatch(RelOptRuleCall call) {
@@ -82,6 +81,9 @@ class BindJoinRule extends RelOptRule {
         if (Boolean.getBoolean("crossdb.debug")) {
           System.err.println("BindJoinRule: 已生成候选计划 innerSql=" + candidate.sqlPrefix);
         }
+      } else if (Boolean.getBoolean("crossdb.debug")) {
+        System.err.println("BindJoinRule: null 候选 type=" + join.getJoinType()
+            + " cond=" + condition);
       }
     } catch (Throwable e) {
       if (Boolean.getBoolean("crossdb.debug")) {
@@ -113,6 +115,14 @@ class BindJoinRule extends RelOptRule {
     List<RexNode> conjuncts = org.apache.calcite.plan.RelOptUtil.conjunctions(condition);
     Map<Integer, Integer> pairs = new LinkedHashMap<>();
     for (RexNode conjunct : conjuncts) {
+      // 去相关 SEMI/ANTI 自带「右 key IS NOT NULL」conjunct：哈希探测的 key 永不含
+      // NULL（keyOf 返回 null 即跳过），等值匹配语义一致，直接忽略
+      if ((joinType == JoinRelType.SEMI || joinType == JoinRelType.ANTI)
+          && conjunct instanceof RexCall isnn
+          && isnn.getKind() == SqlKind.IS_NOT_NULL
+          && isnn.getOperands().get(0) instanceof RexInputRef) {
+        continue;
+      }
       if (!(conjunct instanceof RexCall eq)
           || eq.getKind() != SqlKind.EQUALS
           || eq.getOperands().size() != 2

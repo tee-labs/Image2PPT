@@ -173,6 +173,43 @@ class BindJoinExecTest {
         BindJoinExec.buildWhere(two, 2, false));
   }
 
+  @Test void semiAndAntiEmitLeftRowOnly() {
+    List<String> sqls = Collections.synchronizedList(new ArrayList<>());
+    // SEMI：外表 key 1,2,3；内表有 user_id 1,2 → 1,2 输出外表行，3 无匹配不输出
+    Enumerable<Object[]> semi = BindJoinExec.join(
+        left(new Object[]{1, "a"}, new Object[]{2, "b"}, new Object[]{3, "c"}),
+        recordingDs(sqls), PREFIX, KEY, new int[]{0}, new int[]{1}, 3, 500, 1,
+        false, false, false, false, false, 2, true, false);
+    assertEquals(List.of(List.of(1, "a"), List.of(2, "b")),
+        semi.toList().stream().map(r -> List.of(r[0], r[1])).toList(),
+        "SEMI 应只输出有匹配的外表行，行宽 = 外表宽");
+    // ANTI：只有无匹配的 3 输出
+    List<String> antiSqls = Collections.synchronizedList(new ArrayList<>());
+    Enumerable<Object[]> anti = BindJoinExec.join(
+        left(new Object[]{1, "a"}, new Object[]{2, "b"}, new Object[]{3, "c"}),
+        recordingDs(antiSqls), PREFIX, KEY, new int[]{0}, new int[]{1}, 3, 500, 1,
+        false, false, false, false, false, 2, true, true);
+    assertEquals(List.of(List.of(3, "c")),
+        anti.toList().stream().map(r -> List.of(r[0], r[1])).toList(),
+        "ANTI 应只输出无匹配的外表行");
+    assertTrue(sqls.stream().allMatch(s -> s.contains(" IN (")), sqls.toString());
+  }
+
+  @Test void buildWhereSplitsOversizedInClause() {
+    String[] one = {"\"T\".\"ID\""};
+    String where = BindJoinExec.buildWhere(one, 1200, true);
+    assertEquals(2, where.split(" OR ").length, "1200 个 key 应拆成 2 段: " + where);
+    assertEquals(1200, where.length() - where.replace("?", "").length(),
+        "占位符总数应保持 1200");
+    String[] two = {"\"T\".\"A\"", "\"T\".\"B\""};
+    String tuple = BindJoinExec.buildWhere(two, 1001, true);
+    assertEquals(2, tuple.split("IN \\(\\(").length - 1, "tuple IN 应拆成 2 段: " + tuple);
+    assertEquals(1001 * 2, tuple.length() - tuple.replace("?", "").length());
+    // OR 降级形态无 IN 上限问题，不分段
+    String or = BindJoinExec.buildWhere(two, 1200, false);
+    assertEquals(1200, or.split("\"T\".\"A\" = ").length - 1);
+  }
+
   @Test void streamingFetchesBatchOnDemandOnly() {
     List<String> sqls = Collections.synchronizedList(new ArrayList<>());
     Enumerable<Object[]> out = singleKey(

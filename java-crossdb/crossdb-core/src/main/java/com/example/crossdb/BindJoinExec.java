@@ -29,7 +29,10 @@ import java.util.concurrent.Future;
  *
  * <p>join 类型：INNER / LEFT（outer=true，未匹配外表行右侧补 NULL）/ RIGHT（innerFirst，
  * 外表与内表角色互换，行序仍保持 [原左 ++ 原右]）/ FULL（outer=true + 外表耗尽后对内表
- * 发起一次 NOT IN 反连接，补出未匹配的内表行）。
+ * 发起一次 NOT IN 反连接，补出未匹配的内表行）/ SEMI（semi=true，有匹配输出外表行，
+ * EXISTS）/ ANTI（semi+anti，无匹配输出外表行，NOT EXISTS）。
+ *
+ * <p>内表拉取用 JDK 21 虚拟线程按 parallelism 限流并发。
  *
  * <p>sortedByKey=true 时外表按 join key 有序，每窗口合并前淘汰「key 小于本窗口最小 key」
  * 的哈希旧条目，哈希表内存从 O(distinct keys) 降到 O(窗口 keys)。
@@ -40,12 +43,22 @@ import java.util.concurrent.Future;
 public final class BindJoinExec {
   private BindJoinExec() {}
 
-  /** 兼容旧签名：无淘汰、无 RIGHT/FULL 形态。 */
+  /** 兼容旧签名：无淘汰、无 RIGHT/FULL/SEMI/ANTI 形态。 */
   public static Enumerable<Object[]> join(Enumerable<Object[]> left, DataSource dataSource,
       String sqlPrefix, String[] keyCols, int[] leftKeys, int[] rightKeys, int width,
       int batchSize, int parallelism, boolean outer, boolean tupleIn) {
     return join(left, dataSource, sqlPrefix, keyCols, leftKeys, rightKeys, width,
-        batchSize, parallelism, outer, tupleIn, false, false, false, 0);
+        batchSize, parallelism, outer, tupleIn, false, false, false, 0, false, false);
+  }
+
+  /** 兼容旧签名：无 SEMI/ANTI 形态。 */
+  public static Enumerable<Object[]> join(Enumerable<Object[]> left, DataSource dataSource,
+      String sqlPrefix, String[] keyCols, int[] leftKeys, int[] rightKeys, int width,
+      int batchSize, int parallelism, boolean outer, boolean tupleIn, boolean sortedByKey,
+      boolean innerFirst, boolean full, int leftWidth) {
+    return join(left, dataSource, sqlPrefix, keyCols, leftKeys, rightKeys, width,
+        batchSize, parallelism, outer, tupleIn, sortedByKey, innerFirst, full, leftWidth,
+        false, false);
   }
 
   /** 跨库 join 执行入口（由生成代码与单测直接调用）。
@@ -65,11 +78,13 @@ public final class BindJoinExec {
    * @param innerFirst true=输出行为 [内表列 ++ 外表列]（RIGHT 交换后恢复原始列序）
    * @param full       true=外表耗尽后补内表未匹配行（FULL JOIN）
    * @param leftWidth  外表行宽度（FULL 补 NULL 左侧用）
+   * @param semi       true=仅输出外表行（SEMI：有匹配输出）
+   * @param anti       true=ANTI（无匹配才输出；须与 semi 同设）
    */
   public static Enumerable<Object[]> join(Enumerable<Object[]> left, DataSource dataSource,
       String sqlPrefix, String[] keyCols, int[] leftKeys, int[] rightKeys, int width,
       int batchSize, int parallelism, boolean outer, boolean tupleIn, boolean sortedByKey,
-      boolean innerFirst, boolean full, int leftWidth) {
+      boolean innerFirst, boolean full, int leftWidth, boolean semi, boolean anti) {
     Stats stats = Stats.ACTIVE;
     return new AbstractEnumerable<>() {
       @Override public Enumerator<Object[]> enumerator() {
@@ -176,11 +191,19 @@ public final class BindJoinExec {
             Object[] l = currentRows.next();
             List<Object> key = keyOf(l);
             List<Object[]> m = key == null ? null : hash.get(key);
-            if (outer && (m == null || m.isEmpty())) {
+            boolean matched = m != null && !m.isEmpty();
+            if (semi) {
+              // SEMI：有匹配才输出；ANTI：无匹配才输出；均只输出外表行
+              if (matched != anti) {
+                ready = l;
+              }
+              return;
+            }
+            if (outer && !matched) {
               ready = pad(l);
               return;
             }
-            if (m != null && !m.isEmpty()) {
+            if (matched) {
               currentLeft = l;
               pendingMatches = new ArrayList<>(m);
             }
@@ -238,12 +261,9 @@ public final class BindJoinExec {
               Future<Map<List<Object>, List<Object[]>>> f = null;
               if (!windowKeys.isEmpty()) {
                 if (pool == null) {
-                  pool = Executors.newFixedThreadPool(
-                      Math.max(1, Math.min(parallelism, 8)), r -> {
-                        Thread t = new Thread(r, "crossdb-bind");
-                        t.setDaemon(true);
-                        return t;
-                      });
+                  // ponytail: JDK21 虚拟线程按任务起线程，并发度由 inflight<parallelism 限流，
+                  // 如需更细的并发/队列控制再换固定池
+                  pool = Executors.newVirtualThreadPerTaskExecutor();
                 }
                 f = pool.submit(() -> fetchBatch(dataSource, sqlPrefix, keyCols, tupleIn,
                     new ArrayList<>(windowKeys), rightKeys, width));
@@ -408,8 +428,24 @@ public final class BindJoinExec {
   }
 
   /** 生成 IN 下推 WHERE 子句：单列 {@code c IN (?,?)}；多列 tuple
-   * {@code (c1,c2) IN ((?,?),(?,?))} 或 OR 降级 {@code (c1=? AND c2=?) OR (...)}。 */
+   * {@code (c1,c2) IN ((?,?),(?,?))} 或 OR 降级 {@code (c1=? AND c2=?) OR (...)}。
+   * IN 元素超过 {@link #MAX_IN}（Oracle IN 列表上限 1000，tuple IN 同限）时自动
+   * 拆成 {@code IN (...) OR IN (...)}；参数绑定顺序仍逐 key 顺序展开，不受影响。 */
   static String buildWhere(String[] cols, int nValues, boolean tupleIn) {
+    if (nValues > MAX_IN && (cols.length == 1 || tupleIn)) {
+      List<String> parts = new ArrayList<>();
+      for (int i = 0; i < nValues; i += MAX_IN) {
+        parts.add(inExpr(cols, Math.min(MAX_IN, nValues - i), tupleIn));
+      }
+      return String.join(" OR ", parts);
+    }
+    return inExpr(cols, nValues, tupleIn);
+  }
+
+  /** Oracle 文档上限：单条 IN 列表最多 1000 个元素。 */
+  private static final int MAX_IN = 1000;
+
+  private static String inExpr(String[] cols, int nValues, boolean tupleIn) {
     if (cols.length == 1) {
       return cols[0] + " IN (" + placeholders(nValues) + ")";
     }

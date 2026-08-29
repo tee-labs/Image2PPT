@@ -37,7 +37,8 @@ import java.util.Set;
 /** Bind Join 物理算子：左侧 Enumerable 作为驱动侧流式读取，右侧 JDBC 子树的 SQL
  * 以 {@code SELECT * FROM (inner) T WHERE keys IN (批内 key)} 形式分批并发执行。
  * 支持 INNER、LEFT、RIGHT、FULL（RIGHT 时子树交换为 [右表 ++ 左表] 驱动，FULL 额外
- * 由执行器补内表未匹配行）；行型始终与原 Join 一致（[左 ++ 右]，outer 侧可空）。
+ * 由执行器补内表未匹配行）、SEMI/ANTI（EXISTS/NOT EXISTS 去相关后的半连接，仅输出
+ * 外表行）；行型始终与原 Join 一致（[左 ++ 右]，semi/anti 不投影右表）。
  */
 class EnumerableBindJoin extends Join implements EnumerableRel {
   final String schemaName;
@@ -88,9 +89,13 @@ class EnumerableBindJoin extends Join implements EnumerableRel {
     if (joinType != getJoinType()) {
       throw new AssertionError("EnumerableBindJoin 不支持改写 join 类型: " + joinType);
     }
-    return new EnumerableBindJoin(getCluster(), traitSet, left, right, condition, variablesSet,
-        schemaName, sqlPrefix, keyCols, leftKeys, rightKeys, rightFieldCount, batchSize,
-        parallelism, tupleIn, sortedByKey, leftWidth, joinType);
+    // 本算子只在 Enumerable 约定可实现（内部直连 BindJoinExec）。
+    // 接受其他约定（如 JdbcConvention）会让 volcano 把它登记进 Jdbc 子集，
+    // 进而在其上叠加 JdbcProject/JdbcFilter 生成不可实现的计划。
+    return new EnumerableBindJoin(getCluster(), traitSet.replace(EnumerableConvention.INSTANCE),
+        left, right, condition, variablesSet, schemaName, sqlPrefix, keyCols, leftKeys,
+        rightKeys, rightFieldCount, batchSize, parallelism, tupleIn, sortedByKey, leftWidth,
+        joinType);
   }
 
   /** RIGHT 时子节点已交换为 [右表 ++ 左表]，行型按原始 [左 ++ 右] 恢复（左表可空）。 */
@@ -126,6 +131,12 @@ class EnumerableBindJoin extends Join implements EnumerableRel {
     double batches = Math.max(1.0, Math.ceil(leftRowCount / batchSize));
     // 内表网络行数按权重计入 IO 成本：内表被谓词（过滤/传递谓词）压得越狠越优先
     double io = rightRowCount * 0.1;
+    if (getJoinType() == JoinRelType.SEMI || getJoinType() == JoinRelType.ANTI) {
+      // ponytail: Calcite 给原生 hash 半连接自价 0.01×0（近乎免费），此处只能同为 0，
+      // 引擎策略：半连接一律优先 Bind Join（内表只回传命中 key，网络代价恒优）。
+      // 如需真实代价比较，先给本算子接入行数/索引元数据再恢复计价。
+      return planner.getCostFactory().makeCost(0, 0, 0);
+    }
     return planner.getCostFactory()
         .makeCost(rowCount + leftRowCount + io, 0, io)
         .plus(rightCost.multiplyBy(batches));
@@ -179,7 +190,9 @@ class EnumerableBindJoin extends Join implements EnumerableRel {
         Expressions.constant(sortedByKey),
         Expressions.constant(getJoinType() == JoinRelType.RIGHT),
         Expressions.constant(getJoinType() == JoinRelType.FULL),
-        Expressions.constant(leftWidth)));
+        Expressions.constant(leftWidth),
+        Expressions.constant(getJoinType() == JoinRelType.SEMI),
+        Expressions.constant(getJoinType() == JoinRelType.ANTI)));
     final PhysType physType =
         PhysTypeImpl.of(implementor.getTypeFactory(), getRowType(), JavaRowFormat.ARRAY);
     return implementor.result(physType, builder.toBlock());

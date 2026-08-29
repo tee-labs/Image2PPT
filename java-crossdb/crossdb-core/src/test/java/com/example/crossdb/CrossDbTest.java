@@ -333,6 +333,45 @@ class CrossDbTest {
     }
   }
 
+  @Test void semiJoinExistsPushesInInsteadOfFullScan() throws Exception {
+    List<String> orderSqls = Collections.synchronizedList(new ArrayList<>());
+    DataSource orders = Recording.dataSource(Fixtures.ORDERS, orderSqls, new ArrayList<>());
+    try (CrossDb db = new CrossDb()) {
+      List<String> names = new ArrayList<>();
+      try (ResultSet rs = db.register("userdb", Fixtures.USERS)
+          .register("orderdb", orders).query(
+          "SELECT u.name FROM userdb.users u WHERE EXISTS "
+          + "(SELECT 1 FROM orderdb.orders o WHERE o.user_id = u.id) "
+          + "ORDER BY u.name")) {
+        while (rs.next()) {
+          names.add(rs.getString(1));
+        }
+      }
+      assertEquals(List.of("alice", "bob"), names, "EXISTS 半连接应只保留有订单的用户");
+      assertTrue(orderSqls.stream().anyMatch(s -> s.contains(" IN (")),
+          "orders 侧应收到 IN 下推: " + orderSqls);
+      assertEquals(1, orderSqls.size(), "orders 侧不应全量拉取: " + orderSqls);
+    }
+  }
+
+  @Test void antiJoinNotExistsReturnsCorrectRows() throws Exception {
+    // NOT EXISTS 去相关后是 LEFT JOIN + IS NULL 过滤形态，目前走原生计划
+    //（正确但无 IN 下推；见 README 路线图）。此处锁定语义正确性。
+    try (CrossDb db = new CrossDb()) {
+      List<String> names = new ArrayList<>();
+      try (ResultSet rs = db.register("userdb", Fixtures.USERS)
+          .register("orderdb", Fixtures.ORDERS).query(
+          "SELECT u.name FROM userdb.users u WHERE NOT EXISTS "
+          + "(SELECT 1 FROM orderdb.orders o WHERE o.user_id = u.id) "
+          + "ORDER BY u.name")) {
+        while (rs.next()) {
+          names.add(rs.getString(1));
+        }
+      }
+      assertEquals(List.of("carol"), names, "NOT EXISTS 反连接应只保留无订单的用户");
+    }
+  }
+
   @Test void cancelIsSafeBeforeDuringAndAfterQuery() throws Exception {
     try (CrossDb db = new CrossDb()) {
       db.register("userdb", Fixtures.USERS).register("orderdb", Fixtures.ORDERS);

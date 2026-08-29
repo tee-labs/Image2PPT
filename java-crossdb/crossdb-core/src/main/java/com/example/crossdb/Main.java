@@ -326,7 +326,21 @@ public class Main {
       }
     }
 
-    System.out.println("SELF-CHECK OK: WHERE/LIMIT 执行器、Bind Join（LEFT/RIGHT/FULL/复合键/流式）、"
+    System.out.println("== P: EXISTS 半连接（SEMI，IN 下推）");
+    try (CrossDb db = new CrossDb()) {
+      db.register("userdb", users).register("orderdb", orders);
+      List<String> names = new ArrayList<>();
+      try (ResultSet rs = db.query(
+          "SELECT u.name FROM userdb.users u WHERE EXISTS "
+          + "(SELECT 1 FROM orderdb.orders o WHERE o.user_id = u.id) ORDER BY u.name")) {
+        while (rs.next()) {
+          names.add(rs.getString(1));
+        }
+      }
+      check(names.equals(List.of("alice", "bob")), "EXISTS 应只保留有订单的用户: " + names);
+    }
+
+    System.out.println("SELF-CHECK OK: WHERE/LIMIT 执行器、Bind Join（LEFT/RIGHT/FULL/SEMI/复合键/流式）、"
         + "Top-N 与传递谓词下推、熔断、级联取消、超时传播、safeMode、explain/analyze 全部通过");
   }
 
