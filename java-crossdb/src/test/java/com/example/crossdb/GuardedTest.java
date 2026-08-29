@@ -75,4 +75,24 @@ class GuardedTest {
       }
     }
   }
+
+  @Test void wrapPropagatesTimeoutAndRecordsStats() throws Exception {
+    Stats stats = new Stats();
+    DataSource ds = Guarded.wrap(Fixtures.USERS, 7, 100, "userdb", stats, 5);
+    try (Connection c = ds.getConnection();
+        PreparedStatement ps = c.prepareStatement("SELECT id FROM users WHERE id = ?")) {
+      assertEquals(5, ps.getQueryTimeout());
+      ps.setInt(1, 1);
+      try (ResultSet rs = ps.executeQuery()) {
+        assertTrue(rs.next());
+        assertFalse(rs.next());
+      }
+    }
+    assertEquals(1, stats.schemas.size(), "应记录 userdb 统计");
+    Stats.Schema schema = stats.schemas.get("userdb");
+    assertEquals(1, schema.rows.sum(), "应记录拉取行数 1");
+    assertEquals(1, schema.sqls.size(), "应记录下发 SQL");
+    assertTrue(schema.sqls.iterator().next().contains("users"),
+        String.valueOf(schema.sqls));
+  }
 }

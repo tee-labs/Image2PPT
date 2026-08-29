@@ -29,56 +29,67 @@ import com.google.common.collect.ImmutableSet;
 
 import javax.sql.DataSource;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Set;
 
-/** Bind Join 物理算子：左侧 Enumerable 全量作为驱动侧，右侧 JDBC 子树的 SQL
- * 以 {@code SELECT * FROM (inner) T WHERE T.key IN (批内 key)} 形式分批并发执行。
+/** Bind Join 物理算子：左侧 Enumerable 作为驱动侧流式读取，右侧 JDBC 子树的 SQL
+ * 以 {@code SELECT * FROM (inner) T WHERE keys IN (批内 key)} 形式分批并发执行。
+ * 支持 INNER 与 LEFT（LEFT 时未匹配的外表行右侧补 NULL）。
  */
 class EnumerableBindJoin extends Join implements EnumerableRel {
   final String schemaName;
   final String sqlPrefix;
-  final String keyRef;
-  final int leftKeyIdx;
-  final int rightKeyIdx;
+  final String[] keyCols;
+  final int[] leftKeys;
+  final int[] rightKeys;
   final int rightFieldCount;
   final int batchSize;
   final int parallelism;
+  final boolean tupleIn;
 
   private EnumerableBindJoin(RelOptCluster cluster, RelTraitSet traits, RelNode left,
       RelNode right, RexNode condition, Set<CorrelationId> variablesSet, String schemaName,
-      String sqlPrefix, String keyRef, int leftKeyIdx, int rightKeyIdx, int rightFieldCount,
-      int batchSize, int parallelism) {
-    super(cluster, traits, ImmutableList.of(), left, right, condition, variablesSet,
-        JoinRelType.INNER);
+      String sqlPrefix, String[] keyCols, int[] leftKeys, int[] rightKeys, int rightFieldCount,
+      int batchSize, int parallelism, boolean tupleIn, JoinRelType joinType) {
+    super(cluster, traits, ImmutableList.of(), left, right, condition, variablesSet, joinType);
     this.schemaName = schemaName;
     this.sqlPrefix = sqlPrefix;
-    this.keyRef = keyRef;
-    this.leftKeyIdx = leftKeyIdx;
-    this.rightKeyIdx = rightKeyIdx;
+    this.keyCols = keyCols;
+    this.leftKeys = leftKeys;
+    this.rightKeys = rightKeys;
     this.rightFieldCount = rightFieldCount;
     this.batchSize = batchSize;
     this.parallelism = parallelism;
+    this.tupleIn = tupleIn;
   }
 
   static EnumerableBindJoin create(RelNode left, RelNode right, RexNode condition,
-      String schemaName, String sqlPrefix, String keyRef, int leftKeyIdx, int rightKeyIdx,
-      int rightFieldCount, int batchSize, int parallelism) {
+      String schemaName, String sqlPrefix, String[] keyCols, int[] leftKeys, int[] rightKeys,
+      int rightFieldCount, int batchSize, int parallelism, boolean tupleIn,
+      JoinRelType joinType) {
     RelOptCluster cluster = left.getCluster();
     return new EnumerableBindJoin(cluster,
         cluster.traitSetOf(EnumerableConvention.INSTANCE),
-        left, right, condition, ImmutableSet.of(), schemaName, sqlPrefix, keyRef,
-        leftKeyIdx, rightKeyIdx, rightFieldCount, batchSize, parallelism);
+        left, right, condition, ImmutableSet.of(), schemaName, sqlPrefix, keyCols, leftKeys,
+        rightKeys, rightFieldCount, batchSize, parallelism, tupleIn, joinType);
   }
 
   @Override public EnumerableBindJoin copy(RelTraitSet traitSet, RexNode condition, RelNode left,
       RelNode right, JoinRelType joinType, boolean semiJoinDone) {
+    if (joinType != JoinRelType.INNER && joinType != JoinRelType.LEFT) {
+      throw new AssertionError("EnumerableBindJoin 不支持 " + joinType);
+    }
     return new EnumerableBindJoin(getCluster(), traitSet, left, right, condition, variablesSet,
-        schemaName, sqlPrefix, keyRef, leftKeyIdx, rightKeyIdx, rightFieldCount, batchSize,
-        parallelism);
+        schemaName, sqlPrefix, keyCols, leftKeys, rightKeys, rightFieldCount, batchSize,
+        parallelism, tupleIn, joinType);
   }
 
   @Override public RelWriter explainTerms(RelWriter pw) {
     return super.explainTerms(pw)
+        .item("joinType", getJoinType())
+        .item("keys", keyCols.length)
+        .item("tupleIn", tupleIn)
         .item("batchSize", batchSize)
         .item("parallelism", parallelism);
   }
@@ -86,7 +97,9 @@ class EnumerableBindJoin extends Join implements EnumerableRel {
   @Override public RelOptCost computeSelfCost(RelOptPlanner planner, RelMetadataQuery mq) {
     double rowCount = mq.getRowCount(this);
     double leftRowCount = mq.getRowCount(getLeft());
-    if (Double.isInfinite(rowCount) || Double.isInfinite(leftRowCount)) {
+    double rightRowCount = mq.getRowCount(getRight());
+    if (Double.isInfinite(rowCount) || Double.isInfinite(leftRowCount)
+        || Double.isInfinite(rightRowCount)) {
       return planner.getCostFactory().makeInfiniteCost();
     }
     RelOptCost rightCost = planner.getCost(getRight(), mq);
@@ -94,7 +107,10 @@ class EnumerableBindJoin extends Join implements EnumerableRel {
       return null;
     }
     double batches = Math.max(1.0, Math.ceil(leftRowCount / batchSize));
-    return planner.getCostFactory().makeCost(rowCount + leftRowCount, 0, 0)
+    // 内表网络行数按权重计入 IO 成本：内表被谓词（过滤/传递谓词）压得越狠越优先
+    double io = rightRowCount * 0.1;
+    return planner.getCostFactory()
+        .makeCost(rowCount + leftRowCount + io, 0, io)
         .plus(rightCost.multiplyBy(batches));
   }
 
@@ -135,14 +151,32 @@ class EnumerableBindJoin extends Join implements EnumerableRel {
         leftRows,
         org.apache.calcite.schema.Schemas.unwrap(subSchema, DataSource.class),
         Expressions.constant(sqlPrefix),
-        Expressions.constant(keyRef),
-        Expressions.constant(leftKeyIdx),
-        Expressions.constant(rightKeyIdx),
+        constantArray(String.class, keyCols),
+        constantArray(int.class, leftKeys),
+        constantArray(int.class, rightKeys),
         Expressions.constant(rightFieldCount),
         Expressions.constant(batchSize),
-        Expressions.constant(parallelism)));
+        Expressions.constant(parallelism),
+        Expressions.constant(getJoinType() == JoinRelType.LEFT),
+        Expressions.constant(tupleIn)));
     final PhysType physType =
         PhysTypeImpl.of(implementor.getTypeFactory(), getRowType(), JavaRowFormat.ARRAY);
     return implementor.result(physType, builder.toBlock());
+  }
+
+  private static Expression constantArray(Class<?> type, int[] values) {
+    List<Expression> items = new ArrayList<>();
+    for (int v : values) {
+      items.add(Expressions.constant(v));
+    }
+    return Expressions.newArrayInit(type, items);
+  }
+
+  private static Expression constantArray(Class<?> type, String[] values) {
+    List<Expression> items = new ArrayList<>();
+    for (String v : values) {
+      items.add(Expressions.constant(v));
+    }
+    return Expressions.newArrayInit(type, items);
   }
 }

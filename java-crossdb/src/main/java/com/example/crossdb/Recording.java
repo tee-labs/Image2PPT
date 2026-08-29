@@ -51,7 +51,8 @@ final class Recording {
           if ((n.equals("executeQuery") || n.equals("execute")) && args != null && args.length > 0) {
             sqls.add(String.valueOf(args[0]));
           }
-          if ((n.equals("setFetchSize") || n.equals("setMaxRows")) && args != null && args.length > 0) {
+          if ((n.equals("setFetchSize") || n.equals("setMaxRows") || n.equals("setQueryTimeout"))
+              && args != null && args.length > 0) {
             props.add(n + "(" + args[0] + ")");
           }
           return r;

@@ -85,11 +85,14 @@ class CrossDbTest {
     }
   }
 
-  @Test void crossDbLeftJoinFallsBackAndKeepsUnmatched() throws Exception {
+  @Test void crossDbLeftJoinKeepsUnmatchedAndBindsInner() throws Exception {
+    List<String> sqls = Collections.synchronizedList(new ArrayList<>());
+    DataSource users = Recording.dataSource(Fixtures.USERS, sqls, new ArrayList<>());
+    DataSource orders = Recording.dataSource(Fixtures.ORDERS, sqls, new ArrayList<>());
     try (CrossDb db = new CrossDb()) {
       Map<String, String> m = new LinkedHashMap<>();
-      try (ResultSet rs = db.register("userdb", Fixtures.USERS)
-          .register("orderdb", Fixtures.ORDERS).query(
+      try (ResultSet rs = db.register("userdb", users)
+          .register("orderdb", orders).query(
           "SELECT u.name, COUNT(o.id) AS cnt FROM userdb.users u "
           + "LEFT JOIN orderdb.orders o ON o.user_id = u.id GROUP BY u.name ORDER BY u.name")) {
         while (rs.next()) {
@@ -97,6 +100,130 @@ class CrossDbTest {
         }
       }
       assertEquals(Map.of("alice", "2", "bob", "2", "carol", "0"), m);
+      long inCount = sqls.stream().filter(s -> s.contains(" IN (")).count();
+      long fullCount = sqls.stream().filter(s -> !s.contains(" IN (")).count();
+      assertEquals(1, inCount, "LEFT JOIN 内表应走 IN 下推: " + sqls);
+      assertEquals(1, fullCount, "只有驱动侧一条拉取，内表不应全量拉取: " + sqls);
+    }
+  }
+
+  @Test void whereClauseOnCrossDbJoinWorksAndPushesDown() throws Exception {
+    List<String> sqls = Collections.synchronizedList(new ArrayList<>());
+    DataSource users = Recording.dataSource(Fixtures.USERS, sqls, new ArrayList<>());
+    DataSource orders = Recording.dataSource(Fixtures.ORDERS, sqls, new ArrayList<>());
+    try (CrossDb db = new CrossDb()) {
+      List<String> names = new ArrayList<>();
+      try (ResultSet rs = db.register("userdb", users).register("orderdb", orders).query(
+          "SELECT u.name FROM userdb.users u JOIN orderdb.orders o ON o.user_id = u.id "
+          + "WHERE u.name = 'alice'")) {
+        while (rs.next()) {
+          names.add(rs.getString(1));
+        }
+      }
+      assertEquals(List.of("alice", "alice"), names);
+      assertTrue(sqls.stream().anyMatch(s -> s.contains("'alice'")),
+          "过滤条件应下推到源库: " + sqls);
+    }
+  }
+
+  @Test void transitivePredicatePushedToBothSides() throws Exception {
+    List<String> sqls = Collections.synchronizedList(new ArrayList<>());
+    DataSource users = Recording.dataSource(Fixtures.USERS, sqls, new ArrayList<>());
+    DataSource orders = Recording.dataSource(Fixtures.ORDERS, sqls, new ArrayList<>());
+    try (CrossDb db = new CrossDb()) {
+      int n = 0;
+      try (ResultSet rs = db.register("userdb", users).register("orderdb", orders).query(
+          "SELECT u.name FROM userdb.users u JOIN orderdb.orders o ON o.user_id = u.id "
+          + "WHERE u.id = 1")) {
+        while (rs.next()) {
+          n++;
+        }
+      }
+      assertEquals(2, n);
+      // WHERE u.id = 1 沿 join key 传递：orders 侧 SQL 应包含 user_id = 1
+      assertTrue(sqls.stream().anyMatch(s -> s.contains("ORDERS") && s.contains("= 1")),
+          "传递谓词应下推到 orders 侧: " + sqls);
+    }
+  }
+
+  @Test void topNPushesOrderAndLimitIntoDriverSql() throws Exception {
+    List<String> sqls = Collections.synchronizedList(new ArrayList<>());
+    DataSource orders = Recording.dataSource(Fixtures.ORDERS, sqls, new ArrayList<>());
+    try (CrossDb db = new CrossDb()) {
+      List<Integer> ids = new ArrayList<>();
+      try (ResultSet rs = db.register("userdb", Fixtures.USERS).register("orderdb", orders)
+          .query("SELECT o.id FROM orderdb.orders o JOIN userdb.users u ON o.user_id = u.id "
+              + "ORDER BY o.id DESC LIMIT 2")) {
+        while (rs.next()) {
+          ids.add(rs.getInt(1));
+        }
+      }
+      assertEquals(List.of(103, 102), ids);
+      String ordersSql = sqls.stream().filter(s -> s.contains("ORDERS")).findFirst().orElse("");
+      assertTrue(ordersSql.contains("ORDER BY"), "驱动侧应带 ORDER BY: " + sqls);
+      assertTrue(ordersSql.contains("LIMIT") || ordersSql.contains("FETCH"),
+          "驱动侧应带 LIMIT/FETCH: " + sqls);
+    }
+  }
+
+  @Test void compositeKeyBindJoinAcrossDbs() throws Exception {
+    try (CrossDb db = new CrossDb()) {
+      Map<String, String> m = new LinkedHashMap<>();
+      try (ResultSet rs = db.register("credsdb", Fixtures.CREDS)
+          .register("quotasdb", Fixtures.QUOTAS).query(
+          "SELECT c.login, q.quota FROM credsdb.creds c JOIN quotasdb.quotas q "
+          + "ON c.user_id = q.user_id AND c.tenant_id = q.tenant_id ORDER BY c.login")) {
+        while (rs.next()) {
+          m.put(rs.getString(1), rs.getString(2));
+        }
+      }
+      assertEquals(Map.of("a1", "10", "a2", "5", "b1", "20"), m);
+    }
+  }
+
+  @Test void safeModeRejectsBareScanButAllowsFiltered() throws Exception {
+    try (CrossDb db = new CrossDb().safeMode()) {
+      db.register("userdb", Fixtures.USERS).register("orderdb", Fixtures.ORDERS);
+      assertThrows(CrossDbUnsafeQueryException.class,
+          () -> db.query("SELECT id FROM userdb.users"));
+      assertThrows(CrossDbUnsafeQueryException.class,
+          () -> db.query("SELECT o.id FROM orderdb.orders o JOIN userdb.users u "
+              + "ON o.user_id = u.id"));
+      try (ResultSet rs = db.query("SELECT name FROM userdb.users WHERE id = 1")) {
+        assertTrue(rs.next());
+        assertEquals("alice", rs.getString(1));
+      }
+    }
+  }
+
+  @Test void queryTimeoutPropagatesToSources() throws Exception {
+    List<String> props = Collections.synchronizedList(new ArrayList<>());
+    DataSource users = Recording.dataSource(Fixtures.USERS, new ArrayList<>(), props);
+    try (CrossDb db = new CrossDb(1000, 1_000_000L, 500, 2, 3)) {
+      try (ResultSet rs = db.register("userdb", users).register("orderdb", Fixtures.ORDERS)
+          .query("SELECT id FROM userdb.small")) {
+        assertTrue(rs.next());
+      }
+    }
+    assertTrue(props.contains("setQueryTimeout(3)"), "应设置 queryTimeout=3: " + props);
+  }
+
+  @Test void analyzeReportsSourceSqlAndNetworkRows() throws Exception {
+    try (CrossDb db = new CrossDb()) {
+      db.register("userdb", Fixtures.USERS).register("orderdb", Fixtures.ORDERS);
+      String report = db.analyze(JOIN_SQL);
+      assertTrue(report.contains("userdb") && report.contains("orderdb"), report);
+      assertTrue(report.contains("networkRows"), report);
+      assertTrue(report.contains("SELECT"), report);
+      assertTrue(report.contains("bindJoin"), report);
+    }
+  }
+
+  @Test void explainReturnsPlan() throws Exception {
+    try (CrossDb db = new CrossDb()) {
+      db.register("userdb", Fixtures.USERS).register("orderdb", Fixtures.ORDERS);
+      assertTrue(db.explain(JOIN_SQL).contains("BindJoin"),
+          "explain 应含 BindJoin 算子");
     }
   }
 

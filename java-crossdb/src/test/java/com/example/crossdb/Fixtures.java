@@ -18,6 +18,15 @@ final class Fixtures {
       CREATE TABLE IF NOT EXISTS orders(id INT PRIMARY KEY, user_id INT, amount INT);
       INSERT INTO orders VALUES (100,1,10),(101,2,20),(102,1,5),(103,2,1);
       """);
+  /** 复合键夹具：(user_id, tenant_id) 两列联合 join。 */
+  static final JdbcDataSource CREDS = init("creds", """
+      CREATE TABLE IF NOT EXISTS creds(user_id INT, tenant_id INT, login VARCHAR(20));
+      INSERT INTO creds VALUES (1,100,'a1'),(2,100,'b1'),(1,200,'a2'),(3,100,'c1');
+      """);
+  static final JdbcDataSource QUOTAS = init("quotas", """
+      CREATE TABLE IF NOT EXISTS quotas(tenant_id INT, user_id INT, quota INT);
+      INSERT INTO quotas VALUES (100,1,10),(100,2,20),(200,1,5);
+      """);
 
   private Fixtures() {}
 
