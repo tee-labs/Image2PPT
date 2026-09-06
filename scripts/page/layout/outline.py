@@ -372,6 +372,202 @@ def _quad_ring_candidate(crop_bgr: np.ndarray, fg: np.ndarray,
             float(min(max(thickness, 1.0), 40.0)))
 
 
+def _polygon_candidate(filled: np.ndarray) -> str | None:
+    """Convex-polygon lift for silhouettes the rect/oval gates rejected.
+
+    Runs after the colour-uniformity gates, so only geometry decides.
+    Upright primitives only — kinds map straight onto MSO autoshapes
+    with no rotation:
+      * 3 stable vertices, horizontal base on a bbox edge -> "triangle"
+      * 4 stable vertices at bbox-edge midpoints          -> "diamond"
+      * 4 stable vertices, two horizontal parallel edges,
+        shorter one on top (MSO trapezoid orientation)    -> "trapezoid"
+    Everything else (rotated quads, pentagons, concave glyphs, blobs)
+    returns None so the crop stays on the pixel-perfect PNG path.
+    """
+    h, w = filled.shape[:2]
+    if min(h, w) < 16:
+        return None
+    cnts, _ = cv2.findContours(
+        filled.astype(np.uint8) * 255, cv2.RETR_EXTERNAL,
+        cv2.CHAIN_APPROX_SIMPLE)
+    if not cnts:
+        return None
+    cnt = max(cnts, key=cv2.contourArea)
+    if cv2.contourArea(cnt) < 0.90 * float(filled.sum()):
+        return None  # frilly silhouette (glyph/icon), not a clean polygon
+    peri = cv2.arcLength(cnt, True)
+    if peri <= 0:
+        return None
+    approxes = [cv2.approxPolyDP(cnt, eps * peri, True)
+                for eps in (0.022, 0.035)]
+    if len({len(a) for a in approxes}) != 1:
+        return None  # vertex count unstable across epsilons -> blob
+    approx = approxes[0]
+    if not cv2.isContourConvex(approx):
+        return None
+    pts = approx.reshape(-1, 2).astype(np.float32)
+    n = len(pts)
+    if n == 3:
+        # Upright triangle: longest edge near-horizontal AND sitting on
+        # the bbox top or bottom edge (apex points the other way).
+        e0, e1 = max(
+            ((pts[i], pts[(i + 1) % n]) for i in range(n)),
+            key=lambda p: float(np.hypot(*(p[1] - p[0]))),
+        )
+        length = float(np.hypot(*(e1 - e0)))
+        if length >= 0.5 * max(w, h) \
+                and abs(e1[1] - e0[1]) <= 0.22 * length \
+                and (max(e0[1], e1[1]) >= 0.94 * (h - 1)
+                     or min(e0[1], e1[1]) <= 0.06 * (h - 1)):
+            return "triangle"
+        return None
+    if n != 4:
+        return None
+    horiz = 0
+    for i in range(4):
+        ex, ey = pts[(i + 1) % 4] - pts[i]
+        if abs(ey) <= 0.20 * max(1.0, math.hypot(ex, ey)):
+            horiz += 1
+    if horiz == 2:
+        # Two horizontal edges: trapezoid only when the widths differ
+        # and the short one is on top (MSO default). Equal widths is a
+        # parallelogram/rect — already judged by the rect gates.
+        top_pair = sorted(pts, key=lambda p: p[1])[:2]
+        bot_pair = sorted(pts, key=lambda p: p[1])[-2:]
+        top_w = abs(top_pair[0][0] - top_pair[1][0])
+        bot_w = abs(bot_pair[0][0] - bot_pair[1][0])
+        if min(top_w, bot_w) >= 0.30 * w \
+                and abs(top_w - bot_w) >= 0.25 * max(top_w, bot_w) \
+                and top_w < bot_w:
+            return "trapezoid"
+        return None
+    if horiz >= 1:
+        return None  # mixed quad (kite/house shapes): keep PNG
+    # Diamond: each vertex near ITS OWN bbox-edge midpoint (a slanted
+    # parallelogram shifts its top/bottom vertices off-centre and fails
+    # the slot match). Covers the 45° rotated square.
+    cx, cy = (w - 1) / 2.0, (h - 1) / 2.0
+    tol = max(3.0, 0.12 * min(w, h))
+    slots = {"top": False, "bottom": False, "left": False, "right": False}
+    for x, y in pts:
+        if abs(x - cx) <= tol and y <= 0.15 * h:
+            slots["top"] = True
+        elif abs(x - cx) <= tol and y >= 0.85 * h:
+            slots["bottom"] = True
+        elif abs(y - cy) <= tol and x <= 0.15 * w:
+            slots["left"] = True
+        elif abs(y - cy) <= tol and x >= 0.85 * w:
+            slots["right"] = True
+    if all(slots.values()):
+        return "diamond"
+    return None
+
+
+def classify_connector_line(crop_bgr: np.ndarray):
+    """Lift a straight connector / divider stroke to a native line.
+
+    The stroke must be one thin, straight, uniform-colour run of ink:
+    PCA over the foreground gives the axis; a perp-spread gate rejects
+    elbow polylines and scribbles; a per-segment width profile detects
+    an arrowhead at one end; 1-px occupancy runs along the axis detect
+    a dash / dot pattern. Returns
+    ``(points, line_hex, width_px, dash, arrow)`` — points in crop
+    coordinates, ``dash`` in {"dash", "dot", None}, ``arrow`` in
+    {"start", "end", None} — or None so the crop stays on the PNG path.
+    """
+    h, w = crop_bgr.shape[:2]
+    if h < 4 or w < 4:
+        return None
+    border = np.concatenate([
+        crop_bgr[:2, :].reshape(-1, 3),
+        crop_bgr[-2:, :].reshape(-1, 3),
+        crop_bgr[:, :2].reshape(-1, 3),
+        crop_bgr[:, -2:].reshape(-1, 3),
+    ])
+    bg = np.median(border, axis=0).astype(np.int16)
+    fg = np.abs(crop_bgr.astype(np.int16) - bg[None, None]).max(axis=2) > 14
+    fg_frac = float(fg.mean())
+    if not 0.002 <= fg_frac <= 0.55:
+        return None
+    ys, xs = np.nonzero(fg)
+    if len(xs) < 24:
+        return None
+    pts = np.column_stack([xs, ys]).astype(np.float64)
+    mean = pts.mean(axis=0)
+    cov = (pts - mean).T @ (pts - mean) / max(1, len(pts) - 1)
+    vals, vecs = np.linalg.eigh(cov)
+    v1 = vecs[:, -1]  # major axis
+    v2 = vecs[:, 0]
+    proj = (pts - mean) @ v1
+    perp = (pts - mean) @ v2
+    length = float(proj.max() - proj.min())
+    width_est = len(pts) / max(1.0, length)
+    if length < 24 or width_est > max(6.0, 0.20 * length):
+        return None
+    p05, p95 = np.percentile(perp, [4, 96])
+    if (p95 - p05) > max(5.0, 2.2 * width_est + 2.0):
+        return None  # elbow polyline / L-shape / blob
+    # Arrowhead: perp width per axial segment; a single-end bulge over
+    # the last/first quarter marks a head. Both ends bulging is not a
+    # simple arrow — keep the PNG.
+    k = 8
+    edges = np.linspace(proj.min(), proj.max(), k + 1)
+    seg_w = []
+    for i in range(k):
+        sel = (proj >= edges[i]) & (proj <= edges[i + 1])
+        if int(sel.sum()) < 3:
+            seg_w.append(0.0)
+            continue
+        w05, w95 = np.percentile(perp[sel], [4, 96])
+        seg_w.append(float(w95 - w05))
+    mid = sorted(seg_w[2:6])
+    mid_w = mid[len(mid) // 2] if mid else 0.0
+    arrow = None
+    head_min = max(6.0, 2.5 * mid_w)
+    if seg_w[0] > head_min and seg_w[-1] > head_min:
+        return None
+    if seg_w[-1] > head_min:
+        arrow = "end"
+    elif seg_w[0] > head_min:
+        arrow = "start"
+    # Dash / dot: occupancy runs along the axis in 1-px bins.
+    span = int(round(length)) + 1
+    occ = np.zeros(span, dtype=bool)
+    occ[np.clip((proj - proj.min()).round().astype(int), 0, span - 1)] = True
+    on_runs: list[int] = []
+    off_runs: list[int] = []
+    run = 1
+    for i in range(1, span):
+        if occ[i] == occ[i - 1]:
+            run += 1
+            continue
+        (on_runs if occ[i - 1] else off_runs).append(run)
+        run = 1
+    (on_runs if occ[-1] else off_runs).append(run)
+    dash = None
+    gaps = [g for g in off_runs if g >= 3]
+    if len(on_runs) >= 3 and len(gaps) >= 2:
+        on_med = float(np.median(on_runs))
+        dash = "dot" if on_med <= 3.0 else "dash"
+    if arrow and dash:
+        return None  # dashed arrows: rare; keep the pixel-perfect PNG
+    px_all = crop_bgr[fg].reshape(-1, 3).astype(np.int16)
+    dist_bg = np.abs(px_all - bg[None, :]).max(axis=1)
+    core = px_all[dist_bg >= np.percentile(dist_bg, 50)]
+    line_bgr = np.median(core, axis=0).astype(np.int16)
+    p_tail = mean + v1 * float(proj.min())
+    p_head = mean + v1 * float(proj.max())
+    if arrow == "start":
+        p_tail, p_head = p_head, p_tail
+    cx1_, cy1_ = (int(round(v)) for v in p_tail)
+    cx2_, cy2_ = (int(round(v)) for v in p_head)
+    cx1_ = max(0, min(w - 1, cx1_)); cx2_ = max(0, min(w - 1, cx2_))
+    cy1_ = max(0, min(h - 1, cy1_)); cy2_ = max(0, min(h - 1, cy2_))
+    return ((cx1_, cy1_, cx2_, cy2_), _bgr_to_hex(line_bgr),
+            float(max(1.0, width_est)), dash, arrow)
+
+
 def classify_filled_shape(crop_bgr: np.ndarray):
     """Classify a solid geometric-primitive crop into a native PPT shape.
 
@@ -502,6 +698,12 @@ def classify_filled_shape(crop_bgr: np.ndarray):
             line_hex = _bgr_to_hex(line_bgr)
         if not _border_like(line_bgr):
             return None
+    # Convex polygons the rect/oval gates can't express (isoceles
+    # triangles, diamonds, trapezoids — cov lands between the bands).
+    # Runs after the colour gates so fill/line are already vetted.
+    poly = _polygon_candidate(filled)
+    if poly is not None:
+        return (poly, fill_hex, line_hex, 0.0, 0.0)
     # Thresholds calibrated on rasterized squares with corner radius
     # r/s in [0, 0.5]: corner(c=0.12) falls monotonically 1.0 -> 0.0
     # while cov falls 1.0 -> 0.785 (circle). Mid gaps fall back to PNG.

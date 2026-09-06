@@ -44,6 +44,7 @@ from layout.outline import (  # noqa: E402
     _sample_outline_color,
     _split_filled_outline_rows,
     classify_filled_shape,
+    classify_connector_line,
     classify_outline_ring,
 )
 from layout.text_emit import _emit_text_element_record  # noqa: E402
@@ -608,6 +609,30 @@ class LayoutBuilder:
         # through to the unchanged PNG paths.
         if (role not in {"outline", "background"}
                 and self._enable_native_outline):
+            # Straight connectors/dividers become native line elements
+            # (draggable, recolourable, dash/arrow preserved) instead of
+            # line-art PNG crops. Classifier failure falls through to
+            # the unchanged paths below.
+            if role == "connector":
+                line_hit = classify_connector_line(crop)
+                if line_hit is not None:
+                    (lx1, ly1, lx2, ly2), line_hex, width_px, dash, arrow \
+                        = line_hit
+                    line_el = {
+                        "type": "line", "name": el["id"],
+                        "box": [int(x1), int(y1),
+                                int(x2 - x1), int(y2 - y1)],
+                        "points": [int(x1) + lx1, int(y1) + ly1,
+                                   int(x1) + lx2, int(y1) + ly2],
+                        "line": line_hex,
+                        "line_width": max(0.75, width_px * self.pt_per_px),
+                    }
+                    if dash:
+                        line_el["dash"] = dash
+                    if arrow:
+                        line_el["arrow"] = arrow
+                    self.front_shape_elements.append(line_el)
+                    return
             classified = classify_filled_shape(crop)
             if classified is not None:
                 shape_kind, fill_hex, line_hex, radius, line_px = classified
