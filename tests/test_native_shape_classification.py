@@ -173,9 +173,22 @@ class ClassifyFilledShapeTests(unittest.TestCase):
             cv2.line(img, (x, 10), (x + 6, 10), (180, 180, 180), 1)
         self.assertIsNone(classify_filled_shape(img))
 
-    def test_pale_tint_block_rejected(self) -> None:
+    def test_pale_bordered_card_becomes_native_rect(self) -> None:
+        # The classic deck card: ghost-pale uniform fill + a visible
+        # 1 px border. With a crisp border present it belongs in the
+        # native-shape path (fill + line both preserved); only truly
+        # borderless faint tints keep the PNG path.
         img = np.full((200, 300, 3), (238, 245, 250), dtype=np.uint8)
         cv2.rectangle(img, (0, 0), (299, 199), (200, 200, 200), 1)
+        kind, fill, line, _radius, _line_px = classify_filled_shape(img)
+        self.assertEqual(kind, "rect")
+        self.assertEqual(fill, "#FAF5EE")
+        self.assertEqual(line, "#C8C8C8")
+
+    def test_pale_borderless_tint_rejected(self) -> None:
+        # No border stroke anywhere: a flat native fill would render an
+        # invisible box over a soft-edged tint, so keep the PNG path.
+        img = np.full((200, 300, 3), (238, 245, 250), dtype=np.uint8)
         self.assertIsNone(classify_filled_shape(img))
 
     def test_user_uploaded_ring_asset(self) -> None:

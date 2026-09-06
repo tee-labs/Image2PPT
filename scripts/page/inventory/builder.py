@@ -294,9 +294,22 @@ class InventoryBuilder:
             + [_box4(r) for r in self.line_subicon_records]
             + [_box4(r) for r in self.internal_shape_records]
         )
-        for ex1, ey1, ex2, ey2 in existing:
+        for box in existing:
             if self._box_overlap_ratio(
-                    (ix1, iy1, ix2, iy2), (ex1, ey1, ex2, ey2)) >= 0.5:
+                    (ix1, iy1, ix2, iy2), box) >= 0.5:
+                return True
+        # An outline record describing the SAME card already renders
+        # fill + border natively; a parallel internal record would
+        # duplicate the shape (whole-page primitive pass). Only
+        # comparable-size outlines count — a big panel outline that
+        # merely CONTAINS the candidate must not swallow it.
+        for ox1, oy1, ox2, oy2, _m in self.outline_records:
+            if self._box_overlap_ratio(
+                    (ix1, iy1, ix2, iy2), (ox1, oy1, ox2, oy2)) < 0.5:
+                continue
+            c_area = max(1, (ix2 - ix1) * (iy2 - iy1))
+            o_area = max(1, (ox2 - ox1) * (oy2 - oy1))
+            if min(c_area, o_area) / max(c_area, o_area) >= 0.55:
                 return True
         return False
 
@@ -386,6 +399,25 @@ class InventoryBuilder:
                     self._scan_subicons_inplace(ax1, ay1, ax2, ay2)
                     self._scan_line_subicons_inplace(ax1, ay1, ax2, ay2)
                     self._scan_internal_shapes_inplace(ax1, ay1, ax2, ay2)
+
+    def _scan_whole_page_primitives_inplace(self) -> None:
+        """Whole-page primitive pass over the text-erased image.
+
+        The per-parent scans only see primitives INSIDE their parent's
+        bbox; when merged content (cards + connectors + decorations) is
+        carved into overlapping components, a primitive can be clipped
+        by every component bbox and border-touch each one — never
+        lifted, forever baked into a flattened PNG. Scanning the full
+        page once recovers those: primitives are detected against the
+        slide background itself, where only genuinely slide-clipped
+        shapes touch the border. Duplicates are impossible: candidates
+        already lifted by the per-parent scans are covered by
+        internal/subicon records (`_shape_box_already_covered`), and a
+        candidate duplicating a whole foreground record causes that
+        foreground to be dropped by `_drop_foregrounds_covered_by_shapes`
+        which runs right after this pass.
+        """
+        self._scan_internal_shapes_inplace(0, 0, self.img_w, self.img_h)
 
     def _drop_foregrounds_covered_by_shapes(self) -> None:
         """Drop foregrounds whose bbox is largely covered by sub-icons."""
@@ -735,6 +767,7 @@ class InventoryBuilder:
     def build_and_write(self) -> None:
         self._emit_text_entries()
         self._detect_visual_components()
+        self._scan_whole_page_primitives_inplace()
         self._drop_foregrounds_covered_by_shapes()
         self._drop_outlines_duplicated_by_full_crop()
         self._inpaint_nested_foreground_in_parents()

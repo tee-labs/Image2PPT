@@ -430,13 +430,6 @@ def classify_filled_shape(crop_bgr: np.ndarray):
         quad = _quad_ring_candidate(crop_bgr, fg, bg)
         if quad is not None:
             return quad
-    # Only clearly visible solids qualify: ghost-pale blocks (dashed
-    # photo placeholders, faint tints barely off the panel colour) lose
-    # their border detail as a flat native fill, so keep them as PNGs.
-    gray_med = float(np.median(gray[fg]))
-    sat_med = float(np.median(hsv[:, :, 1][fg]))
-    if gray_med >= 235 and sat_med <= 25:
-        return None
     # Fill interior holes (erased text leaves gaps inside badges) so the
     # coverage metrics describe the silhouette, not the gaps. A hole is
     # a background component NOT touching the crop border.
@@ -458,9 +451,19 @@ def classify_filled_shape(crop_bgr: np.ndarray):
     if float((spread <= 30).mean()) < 0.80:
         return None  # gradient / photo / multi-colour content
     # Interior must be uniform too: a glyph or photo baked inside the
-    # shape would be lost by a native-shape emit, so keep the PNG.
+    # shape would be lost by a native-shape emit, so keep the PNG. The
+    # erosion must clear the shape's own border stroke (2-3 px + anti-
+    # alias), not just 2 iterations — border remnants read as interior
+    # spread and rejected pale bordered cards at 0.96 vs the 0.97 gate.
+    # borderValue=0 matters: cv2's erode default pads with +inf, which
+    # lets the border stroke survive on crop-edge rows of tight bboxes
+    # and pollute the core.
+    core_depth = max(3, min(h, w) // 24)
     core = cv2.erode(filled.astype(np.uint8) * 255,
-                     np.ones((3, 3), np.uint8), iterations=2) > 0
+                     np.ones((3, 3), np.uint8),
+                     iterations=core_depth,
+                     borderType=cv2.BORDER_CONSTANT,
+                     borderValue=0) > 0
     if int(core.sum()) >= 24:
         core_pixels = crop_bgr[core].reshape(-1, 3)
         core_spread = np.abs(
@@ -476,6 +479,29 @@ def classify_filled_shape(crop_bgr: np.ndarray):
         line_bgr = fill_bgr
     fill_hex = _bgr_to_hex(fill_bgr)
     line_hex = _bgr_to_hex(line_bgr)
+    # Ghost-pale fill gate (after colour sampling): faint tint blocks
+    # stay PNG unless a crisp solid border exists — pale cards with a
+    # visible outline are the classic deck card and belong in the
+    # native-shape path. Border evidence comes from either the
+    # silhouette boundary (padded crop: the border ring around the crop
+    # sampled white so the stroke lands on the boundary) or the
+    # segmentation bg itself (tight crop: the border ring IS the card's
+    # stroke). Dashed placeholders and borderless tint panels have
+    # neither → PNG.
+    gray_med = float(np.median(gray[fg]))
+    sat_med = float(np.median(hsv[:, :, 1][fg]))
+    if gray_med >= 235 and sat_med <= 25:
+        def _border_like(colour: np.ndarray) -> bool:
+            diff = float(np.max(
+                np.abs(colour.astype(np.int16) - fill_bgr.astype(np.int16))))
+            lum = float(0.114 * colour[0]
+                        + 0.587 * colour[1] + 0.299 * colour[2])
+            return diff > 30 and lum < 235
+        if _border_like(bg) and not _border_like(line_bgr):
+            line_bgr = bg.copy()
+            line_hex = _bgr_to_hex(line_bgr)
+        if not _border_like(line_bgr):
+            return None
     # Thresholds calibrated on rasterized squares with corner radius
     # r/s in [0, 0.5]: corner(c=0.12) falls monotonically 1.0 -> 0.0
     # while cov falls 1.0 -> 0.785 (circle). Mid gaps fall back to PNG.
