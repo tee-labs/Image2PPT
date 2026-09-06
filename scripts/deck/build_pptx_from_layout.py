@@ -548,6 +548,19 @@ class Builder:
         dash = dash_style(el.get("dash"))
         if dash:
             line.line.dash_style = dash
+        arrow = str(el.get("arrow") or "").lower()
+        if arrow in {"start", "end", "both"}:
+            # python-pptx has no arrowhead API; a:headEnd / a:tailEnd
+            # must follow a:prstDash in CT_LineProperties child order.
+            ln = line.line._get_or_add_ln()
+            if arrow in {"start", "both"}:
+                head = OxmlElement("a:headEnd")
+                head.set("type", "triangle")
+                ln.append(head)
+            if arrow in {"end", "both"}:
+                tail = OxmlElement("a:tailEnd")
+                tail.set("type", "triangle")
+                ln.append(tail)
 
     def add_slide(self, spec: dict[str, Any]) -> None:
         self.set_slide_coordinate_space(spec)

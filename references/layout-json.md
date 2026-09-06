@@ -77,6 +77,8 @@ Supported shapes include `rect`, `rounded_rect`, `oval`, `diamond`, `triangle`, 
 
 Simple solid geometry (circles, rounded rects, rects — card frames, circular badges, colour chips) is emitted as native shapes; photos, gradients, and complex icons stay as image crops. Card-frame shapes render before images; solid chip/badge shapes render after images (their pixels were inpainted out of the parent card) and before text.
 
+The page pipeline lifts geometry automatically: solid upright polygons (triangles, diamonds, short-top trapezoids) and thin ring/annulus outlines classify to native shapes (`scripts/page/layout/outline.py::classify_filled_shape`); anything ambiguous stays a pixel-perfect PNG.
+
 ### Line
 
 ```json
@@ -91,6 +93,8 @@ Simple solid geometry (circles, rounded rects, rects — card frames, circular b
 ```
 
 Use native lines for separators and rules when they are simple. Use extracted images for complex gradient/ornamental lines.
+
+Straight connector-role strokes detected in the source (solid, dashed, dotted, diagonal, single arrowhead) are lifted to native `line` elements automatically (`classify_connector_line`); an optional `"arrow": "start"|"end"|"both"` renders a triangle arrowhead. Elbow polylines and ornamental strokes stay PNG crops.
 
 ## Ordering
 
