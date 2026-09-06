@@ -291,9 +291,12 @@ def _quad_ring_candidate(crop_bgr: np.ndarray, fg: np.ndarray,
     rectangle frame (aspect 2:1, 3:1 …) fails its aspect gate and the
     frame stays a flattened PNG. This parallel classifier covers the
     quad case: one dominant component, a centred interior hole, ink on
-    all four straight sides, one uniform stroke colour. Returns
-    ``("rect"|"round_rect", None, line_hex, radius, thickness_px)`` or
-    None.
+    all four straight sides, one uniform stroke colour. A DASHED frame
+    shatters into many dash components; a dash-scale morphological
+    close is tried before giving up, and the kind gains a ``dashed_``
+    prefix so the PPTX builder restores the dash style. Returns
+    ``("rect"|"round_rect"|"dashed_rect"|"dashed_round_rect", None,
+    line_hex, radius, thickness_px)`` or None.
     """
     h, w = fg.shape[:2]
     fg_u8 = fg.astype(np.uint8)
@@ -301,8 +304,33 @@ def _quad_ring_candidate(crop_bgr: np.ndarray, fg: np.ndarray,
     if n_labels - 1 == 0:
         return None
     counts = np.bincount(labels.ravel())[1:]
-    if int(counts.max()) < 0.85 * int(fg.sum()):
-        return None  # scattered fragments, not a frame
+    orig_fg_px = int(fg.sum())
+    colour_fg = fg
+    dashed = False
+    if int(counts.max()) < 0.85 * orig_fg_px:
+        # Scattered fragments — but a dashed frame's dashes are exactly
+        # that. Bridge dash gaps ALONG each stroke with directional
+        # closes (a square close cannot seal the diagonal corner crack
+        # between two dash-phase-offset strokes), then stamp the four
+        # corner blocks so the ring encloses the interior hole.
+        work = cv2.morphologyEx(fg_u8, cv2.MORPH_CLOSE,
+                                np.ones((1, 11), np.uint8))
+        work = cv2.morphologyEx(work, cv2.MORPH_CLOSE,
+                                np.ones((11, 1), np.uint8))
+        gap = 14
+        work[:gap, :gap] = 255
+        work[:gap, -gap:] = 255
+        work[-gap:, :gap] = 255
+        work[-gap:, -gap:] = 255
+        n2, labels2 = cv2.connectedComponents(work, 8)
+        if n2 - 1 == 0:
+            return None
+        counts2 = np.bincount(labels2.ravel())[1:]
+        if int(counts2.max()) < 0.85 * int((work > 0).sum()):
+            return None
+        fg_u8 = work
+        fg = work.astype(bool)
+        dashed = True
     closed = cv2.morphologyEx(fg_u8, cv2.MORPH_CLOSE,
                               np.ones((3, 3), np.uint8))
     inv = (~closed.astype(bool)).astype(np.uint8)
@@ -315,9 +343,9 @@ def _quad_ring_candidate(crop_bgr: np.ndarray, fg: np.ndarray,
         inv_labels, [i for i in range(1, n_inv) if i not in border_labels])
     hole_px = int(hole.sum())
     fg_px = int(fg.sum())
+    ys, xs = np.nonzero(fg)
     if hole_px < max(80, int(0.25 * fg_px)):
         return None  # filled solid, L-shape, or open frame
-    ys, xs = np.nonzero(fg)
     hys, hxs = np.nonzero(hole)
     if np.hypot(hxs.mean() - xs.mean(), hys.mean() - ys.mean()) \
             > 0.20 * max(w, h):
@@ -340,8 +368,10 @@ def _quad_ring_candidate(crop_bgr: np.ndarray, fg: np.ndarray,
     if min(f_top, f_bot, f_left, f_right) < 0.65:
         return None  # curved or open silhouette, not a frame
     # One uniform stroke colour, sampled from the stroke core (farthest
-    # from bg) so the anti-alias halo doesn't wash out the estimate.
-    px_all = crop_bgr[fg].reshape(-1, 3).astype(np.int16)
+    # from bg) so the anti-alias halo doesn't wash out the estimate. For
+    # a dashed frame sample the ORIGINAL dash ink — the bridged mask is
+    # mostly gap pixels whose image colour is the background.
+    px_all = crop_bgr[colour_fg].reshape(-1, 3).astype(np.int16)
     dist_bg = np.abs(px_all - bg[None, :]).max(axis=1)
     core = px_all[dist_bg >= np.percentile(dist_bg, 60)]
     if len(core) < 12:
@@ -366,10 +396,163 @@ def _quad_ring_candidate(crop_bgr: np.ndarray, fg: np.ndarray,
     else:
         radius = min(0.5, max(0.08, (dist + 2.0) / 0.414 / min(h, w)))
         kind, radius = "round_rect", round(radius, 3)
-    # Stroke thickness ≈ fg px / approximate centerline length.
-    thickness = fg_px / float(max(1.0, 2.0 * (w + h)))
+    if dashed:
+        kind = f"dashed_{kind}"
+    # Stroke thickness ≈ fg px / approximate centerline length. For a
+    # dashed frame the bridged mask would inflate the estimate, so use
+    # the original dash ink.
+    thickness = (orig_fg_px if dashed else fg_px) \
+        / float(max(1.0, 2.0 * (w + h)))
     return (kind, None, _bgr_to_hex(line_bgr), radius,
             float(min(max(thickness, 1.0), 40.0)))
+
+
+def _arrow_axis_profile(filled: np.ndarray):
+    """Score an oriented (right-pointing) block-arrow silhouette.
+
+    Returns ``(shaft_px, head_len_px)`` when the per-column ink-height
+    profile shows a constant-thickness stem on the left and a
+    full-height triangular head tapering to a tip on the right, else
+    None. Works on the hole-filled, tight-bbox-trimmed silhouette.
+    """
+    h, w = filled.shape
+    if min(h, w) < 24:
+        return None
+    col_h = filled.sum(axis=0).astype(np.int32)
+    full = np.nonzero(col_h >= 0.85 * h)[0]
+    if len(full) == 0:
+        return None
+    head_start = int(full[0])
+    if head_start < max(4, 0.15 * w) or head_start > 0.85 * w:
+        return None
+    stem_zone = col_h[:head_start]
+    if len(stem_zone) < 6:
+        return None
+    shaft = float(np.median(stem_zone[len(stem_zone) // 8:]))
+    if shaft < 3 or shaft > 0.75 * h:
+        return None
+    if float(np.max(np.abs(stem_zone - shaft))) > max(2.0, 0.30 * shaft):
+        return None
+    # The stem must be ONE solid horizontal band (a flag/banner pair of
+    # bars leaves background rows between them).
+    stem_rows = np.nonzero(filled[:, :head_start].any(axis=1))[0]
+    if len(stem_rows) == 0:
+        return None
+    if stem_rows[-1] - stem_rows[0] + 1 > shaft + max(3.0, 0.15 * shaft):
+        return None
+    # Head tapers to a tip: the last column must be nearly empty.
+    if col_h[-1] > 0.35 * h:
+        return None
+    head_len = w - head_start
+    if head_len < 0.10 * w:
+        return None
+    return shaft, float(head_len)
+
+
+def _arrow_candidate(filled: np.ndarray):
+    """Lift a solid block arrow (MSO right/left/up/down arrow).
+
+    The oriented profile test runs on four re-orientations of the
+    silhouette; the winning orientation names the MSO autoshape so no
+    rotation is needed. Returns ``(kind, adj1, adj2)`` — shaft-thickness
+    and head-length adjustments in the preset's own frame — or None.
+    """
+    variants = (
+        ("right_arrow", filled),
+        ("left_arrow", filled[:, ::-1]),
+        ("down_arrow", filled.T),
+        ("up_arrow", filled.T[:, ::-1]),
+    )
+    for kind, mask in variants:
+        mask = np.ascontiguousarray(mask)
+        hit = _arrow_axis_profile(mask)
+        if hit is None:
+            continue
+        shaft, head_len = hit
+        h_o, w_o = mask.shape
+        ss = max(1.0, float(min(h_o, w_o)))
+        adj1 = min(1.0, max(0.05, shaft / float(h_o)))
+        adj2 = min(w_o / ss, max(0.05, head_len / ss))
+        return kind, round(adj1, 3), round(adj2, 3)
+    return None
+
+
+def arrow_geometry(crop_bgr: np.ndarray):
+    """Re-measure block-arrow adjustments for a classified arrow crop.
+
+    ``classify_filled_shape`` keeps its 5-tuple return contract, so the
+    builder calls this once on the same crop when the classified kind is
+    an arrow. Returns ``(kind, [adj1, adj2])`` or None.
+    """
+    h, w = crop_bgr.shape[:2]
+    if h < 12 or w < 12:
+        return None
+    border = np.concatenate([
+        crop_bgr[:2, :].reshape(-1, 3),
+        crop_bgr[-2:, :].reshape(-1, 3),
+        crop_bgr[:, :2].reshape(-1, 3),
+        crop_bgr[:, -2:].reshape(-1, 3),
+    ])
+    bg = np.median(border, axis=0).astype(np.int16)
+    fg = np.abs(crop_bgr.astype(np.int16) - bg[None, None]).max(axis=2) > 14
+    if float(fg.mean()) < 0.30:
+        return None
+    inv = (~fg).astype(np.uint8)
+    n_labels, labels = cv2.connectedComponents(inv, 4)
+    border_labels = set(labels[0, :].tolist()) | set(labels[-1, :].tolist()) \
+        | set(labels[:, 0].tolist()) | set(labels[:, -1].tolist())
+    hole_mask = np.isin(
+        labels, [i for i in range(1, n_labels) if i not in border_labels])
+    filled = fg | hole_mask
+    ys, xs = np.nonzero(filled)
+    if len(xs) == 0:
+        return None
+    filled = filled[int(ys.min()):int(ys.max()) + 1,
+                    int(xs.min()):int(xs.max()) + 1]
+    return _arrow_candidate(filled)
+
+
+def _banner_candidate(ap: np.ndarray, w: int, h: int) -> str | None:
+    """Right-pointing process banners: homeplate (flat left edge) and
+    chevron (notched left edge).
+
+    MSO draws both pointing right, so only that orientation lifts.
+    Slot structure from the stable polygon approximation:
+      homeplate — 5 vertices: top pair (0, xa), bottom pair (0, xa),
+                  apex at (w, mid).
+      chevron   — 6 vertices: same four shoulders plus a reflex notch
+                  vertex at (xn, mid) on the left edge.
+    """
+    tol = max(3.0, 0.12 * min(w, h))
+    if h < 20 or w < 30:
+        return None
+    top = [p for p in ap if p[1] <= tol]
+    bot = [p for p in ap if p[1] >= h - 1 - tol]
+    right = [p for p in ap
+             if p[0] >= w - 1 - tol and abs(p[1] - (h - 1) / 2.0) <= tol]
+    mid = [p for p in ap if tol < p[1] < h - 1 - tol]
+    if len(top) != 2 or len(bot) != 2:
+        return None
+    if not all(abs(p[1] - (h - 1) / 2.0) <= tol for p in mid):
+        return None
+    tx = sorted(float(p[0]) for p in top)
+    bx = sorted(float(p[0]) for p in bot)
+    if abs(tx[0] - bx[0]) > tol or abs(tx[1] - bx[1]) > tol:
+        return None  # shoulders must align vertically
+    if tx[0] > 2.0 * tol:
+        return None  # left edge not flush with the bbox side
+    if tx[1] < 0.25 * (w - 1) or tx[1] > 0.92 * (w - 1):
+        return None  # shoulder must sit between flush and apex
+    if len(mid) == 1 and len(right) == 1 \
+            and abs(mid[0][0] - right[0][0]) <= 1.0:
+        return "homeplate"
+    if len(mid) == 2 and len(right) == 1:
+        notch = [p for p in mid if p[0] < tx[1] - 0.02 * w]
+        apex = [p for p in mid if abs(p[0] - (w - 1)) <= tol]
+        if len(apex) == 1 and len(notch) == 1 \
+                and tx[0] <= notch[0][0] <= tx[1]:
+            return "chevron"
+    return None
 
 
 def _regular_polygon_slots(pts: np.ndarray, n: int,
@@ -437,6 +620,15 @@ def _polygon_candidate(filled: np.ndarray) -> str | None:
     if len({len(a) for a in approxes}) != 1:
         return None  # vertex count unstable across epsilons -> blob
     approx = approxes[0]
+    # Process banners (homeplate / chevron) are slot-checked before the
+    # vertex-sharpness gate: a shallow head meets the horizontal edge at
+    # ~35-40°, below the arc-rejection threshold, and the banner slot
+    # structure (aligned shoulders + centred apex/notch) is itself a
+    # strong gate against arc-collapse false positives.
+    ap_early = approx.reshape(-1, 2).astype(np.float64)
+    banner = _banner_candidate(ap_early, w, h)
+    if banner is not None:
+        return banner
     # Sharpness: a rounded rect's arc contour collapses to a slanted
     # quad at these epsilons, and its arc perimeter far exceeds the
     # chord polygon's. A true polygon keeps the two within a few
@@ -529,9 +721,11 @@ def _polygon_candidate(filled: np.ndarray) -> str | None:
         top_w = abs(top_pair[0][0] - top_pair[1][0])
         bot_w = abs(bot_pair[0][0] - bot_pair[1][0])
         if min(top_w, bot_w) >= 0.30 * w \
-                and abs(top_w - bot_w) >= 0.25 * max(top_w, bot_w) \
-                and top_w < bot_w:
-            return "trapezoid"
+                and abs(top_w - bot_w) >= 0.25 * max(top_w, bot_w):
+            # Short side on top is the MSO trapezoid default; a short
+            # BOTTOM lifts as "trapezoid_down" (the PPTX builder adds a
+            # 180° rotation) instead of staying a PNG.
+            return "trapezoid" if top_w < bot_w else "trapezoid_down"
         # Equal-width horizontal edges that are horizontally offset:
         # a parallelogram. A rect's top/bottom mids align (slant ~ 0)
         # and fall through to the upright rect coverage band instead.
@@ -919,8 +1113,8 @@ def classify_connector_line(crop_bgr: np.ndarray):
     arrow = None
     head_min = max(6.0, 2.5 * mid_w)
     if seg_w[0] > head_min and seg_w[-1] > head_min:
-        return None
-    if seg_w[-1] > head_min:
+        arrow = "both"
+    elif seg_w[-1] > head_min:
         arrow = "end"
     elif seg_w[0] > head_min:
         arrow = "start"
@@ -961,6 +1155,126 @@ def classify_connector_line(crop_bgr: np.ndarray):
             float(max(1.0, width_est)), dash, arrow)
 
 
+def classify_elbow_line(crop_bgr: np.ndarray):
+    """Lift an L-shaped (single 90° bend) connector to a polyline.
+
+    Straight strokes route through ``classify_connector_line``; an
+    elbow used to fall through to the flattened PNG path. Requires one
+    dominant, axis-aligned stroke hugging two ADJACENT bbox sides with
+    the opposite sides empty, and one uniform stroke colour. Returns the
+    same tuple shape as ``classify_connector_line`` but with a 6-value
+    ``points`` list (corner in the middle) — or None. Z-shaped (two
+    bend) polylines keep the PNG path.
+    """
+    h, w = crop_bgr.shape[:2]
+    if h < 12 or w < 12:
+        return None
+    border = np.concatenate([
+        crop_bgr[:2, :].reshape(-1, 3),
+        crop_bgr[-2:, :].reshape(-1, 3),
+        crop_bgr[:, :2].reshape(-1, 3),
+        crop_bgr[:, -2:].reshape(-1, 3),
+    ])
+    bg = np.median(border, axis=0).astype(np.int16)
+    fg = np.abs(crop_bgr.astype(np.int16) - bg[None, None]).max(axis=2) > 14
+    fg_u8 = cv2.morphologyEx(
+        fg.astype(np.uint8) * 255, cv2.MORPH_CLOSE,
+        np.ones((3, 3), np.uint8))
+    n_labels, labels = cv2.connectedComponents(fg_u8, 8)
+    if n_labels - 1 == 0:
+        return None
+    counts = np.bincount(labels.ravel())[1:]
+    total = int((fg_u8 > 0).sum())
+    if total < 24 or int(counts.max()) < 0.85 * total:
+        return None
+    m = labels == (int(np.argmax(counts)) + 1)
+    ys, xs = np.nonzero(m)
+    if len(xs) < 24:
+        return None
+    fg_px = int(m.sum())
+    stroke = fg_px / max(1.0, float(xs.max() - xs.min() + ys.max() - ys.min()))
+    if stroke > 0.35 * min(h, w):
+        return None  # thick blob, not a stroke
+    tol = max(2, int(round(1.8 * stroke)))
+
+    def _side_frac(top_side: bool, horizontal: bool) -> float:
+        # Fraction of columns (rows) whose nearest ink to this side lies
+        # within tol of it — an arm hugging the side scores ~1.0. For the
+        # bottom/right sides the flipped-array argmax index IS the
+        # distance from that side.
+        if horizontal:
+            any_ = m.any(axis=0)
+            near = np.argmax(m, axis=0) if top_side \
+                else np.argmax(m[::-1, :], axis=0)
+            return float(((near <= tol) & any_).sum()) / max(1, w)
+        any_ = m.any(axis=1)
+        near = np.argmax(m, axis=1) if top_side \
+            else np.argmax(m[:, ::-1], axis=1)
+        return float(((near <= tol) & any_).sum()) / max(1, h)
+
+    corner_kind = None
+    for kind, (h_top, v_top) in (
+        ("tl", (True, True)),
+        ("tr", (True, False)),
+        ("bl", (False, True)),
+        ("br", (False, False)),
+    ):
+        if _side_frac(h_top, True) < 0.85 or _side_frac(v_top, False) < 0.85:
+            continue
+        # Opposite sides must be mostly empty.
+        opp_h = _side_frac(not h_top, True)
+        opp_v = _side_frac(not v_top, False)
+        if max(opp_h, opp_v) > 0.30:
+            continue
+        corner_kind = kind
+        break
+    if corner_kind is None:
+        return None
+    # One uniform stroke colour, sampled from the stroke core.
+    px_all = crop_bgr[m].reshape(-1, 3).astype(np.int16)
+    dist_bg = np.abs(px_all - bg[None, :]).max(axis=1)
+    core = px_all[dist_bg >= np.percentile(dist_bg, 50)]
+    if len(core) < 12:
+        return None
+    line_bgr = np.median(core, axis=0).astype(np.int16)
+    spread = np.abs(core - line_bgr[None, :]).max(axis=1)
+    if float((spread <= 36).mean()) < 0.75:
+        return None
+    kind = corner_kind
+    x1, x2 = int(xs.min()), int(xs.max())
+    y1, y2 = int(ys.min()), int(ys.max())
+    if kind == "tl":
+        pts = ((x2, y1), (x1, y1), (x1, y2))
+    elif kind == "tr":
+        pts = ((x1, y1), (x2, y1), (x2, y2))
+    elif kind == "bl":
+        pts = ((x2, y2), (x1, y2), (x1, y1))
+    else:
+        pts = ((x1, y2), (x2, y2), (x2, y1))
+    flat = []
+    for px_, py_ in pts:
+        flat.append(max(0, min(w - 1, px_)))
+        flat.append(max(0, min(h - 1, py_)))
+    return (tuple(flat), _bgr_to_hex(line_bgr),
+            float(max(1.0, stroke)), None, None)
+
+
+def _bg_excluding_fg(crop_bgr: np.ndarray, fg: np.ndarray) -> np.ndarray:
+    """Re-sample the background colour from non-foreground border pixels.
+
+    When a shape touches every crop edge the 2-px border ring is half
+    shape ink; the plain border median can land ON the shape colour and
+    invert the ring classifiers' colour-core sampling.
+    """
+    border_sel = np.zeros(fg.shape, dtype=bool)
+    border_sel[:2, :] = border_sel[-2:, :] = True
+    border_sel[:, :2] = border_sel[:, -2:] = True
+    bg_px = crop_bgr[border_sel & ~fg]
+    if len(bg_px) >= 12:
+        return np.median(bg_px, axis=0).astype(np.int16)
+    return np.array([255, 255, 255], np.int16)
+
+
 def classify_filled_shape(crop_bgr: np.ndarray):
     """Classify a solid geometric-primitive crop into a native PPT shape.
 
@@ -992,20 +1306,27 @@ def classify_filled_shape(crop_bgr: np.ndarray):
     if float(fg.mean()) < 0.30:
         # The shape touches every crop edge, so the border ring sampled
         # the shape's own colour. Fall back to white-diff segmentation.
-        fg = (((gray < 250) & (diff_white > 6))
-              | ((hsv[:, :, 1] > 10) & (diff_white > 4)))
-        if float(fg.mean()) < 0.30:
-            # Sparse silhouettes (thin rings) can't reach the filled
-            # branches, but the ring branches may still claim them.
-            if float(fg.mean()) < 0.02:
+        cand = (((gray < 250) & (diff_white > 6))
+                | ((hsv[:, :, 1] > 10) & (diff_white > 4)))
+        if float(cand.mean()) < 0.30:
+            # Sparse silhouettes (thin rings, dashed frames) can't reach
+            # the filled branches, but the ring branches may still claim
+            # them — the ring classifiers carry their own structure and
+            # colour gates, so a low floor is safe here. bg must be
+            # re-sampled EXCLUDING foreground border pixels: the border
+            # ring is half dash/shape ink here, and a shape-coloured bg
+            # would invert the colour-core sampling.
+            if float(cand.mean()) < 0.02:
                 return None
-            ring = _ring_candidate(crop_bgr, fg, bg)
+            sparse_bg = _bg_excluding_fg(crop_bgr, cand)
+            ring = _ring_candidate(crop_bgr, cand, sparse_bg)
             if ring is not None:
                 return ring
-            quad = _quad_ring_candidate(crop_bgr, fg, bg)
+            quad = _quad_ring_candidate(crop_bgr, cand, sparse_bg)
             if quad is not None:
                 return quad
-            return _ellipse_ring_candidate(crop_bgr, fg, bg)
+            return _ellipse_ring_candidate(crop_bgr, cand, sparse_bg)
+        fg = cand
     elif float(fg.mean()) > 0.60:
         # Hollow frame touching the crop edge: the border ring sampled
         # the frame's stroke, inverting the mask (interior reads as
@@ -1015,6 +1336,7 @@ def classify_filled_shape(crop_bgr: np.ndarray):
                 | ((hsv[:, :, 1] > 10) & (diff_white > 4)))
         if float(cand.mean()) < float(fg.mean()):
             fg = cand
+            bg = _bg_excluding_fg(crop_bgr, fg)
     if float(fg.mean()) < 0.55:
         ring = _ring_candidate(crop_bgr, fg, bg)
         if ring is not None:
@@ -1062,6 +1384,13 @@ def classify_filled_shape(crop_bgr: np.ndarray):
     poly = _polygon_candidate(filled)
     if poly is not None:
         return (poly, fill_hex, line_hex, 0.0, 0.0)
+    # Solid block arrows (process-flow chevron arrows, step pointers)
+    # are concave so the polygon gates reject them; the structural
+    # stem+head profile test lifts them instead. The builder re-measures
+    # shaft/head adjustments via arrow_geometry().
+    arrow = _arrow_candidate(filled)
+    if arrow is not None:
+        return (arrow[0], fill_hex, line_hex, 0.0, 0.0)
     # Thresholds calibrated on rasterized squares with corner radius
     # r/s in [0, 0.5]: corner(c=0.12) falls monotonically 1.0 -> 0.0
     # while cov falls 1.0 -> 0.785 (circle). Mid gaps fall back to PNG.
@@ -1164,6 +1493,30 @@ def classify_outline_ring(
         _straight(mask[:, -band:], 1),
     )
     if min(sides) < 0.50:
+        # Dash gaps read as missing side ink; bridge dash-scale gaps
+        # along each axis (directional closes don't fatten the stroke)
+        # and retry before falling through. A dashed CARD frame is a
+        # common deck motif and lifts to a native dashed round-rect.
+        closed9 = cv2.morphologyEx(
+            mask.astype(np.uint8) * 255, cv2.MORPH_CLOSE,
+            np.ones((1, 11), np.uint8))
+        closed9 = cv2.morphologyEx(
+            closed9, cv2.MORPH_CLOSE, np.ones((11, 1), np.uint8)) > 0
+        sides9 = (
+            _straight(closed9[:band, :], 0),
+            _straight(closed9[-band:, :], 0),
+            _straight(closed9[:, :band], 1),
+            _straight(closed9[:, -band:], 1),
+        )
+        if min(sides9) >= 0.50:
+            c = max(3, int(round(min(h, w) * 0.25)))
+            cys, cxs = np.nonzero(closed9[:c, :c])
+            if len(cxs):
+                dist = float(np.min(np.hypot(cxs, cys))) + 2.0
+                radius = min(0.5, max(0.08, dist / 0.414 / min(h, w)))
+            else:
+                radius = 0.08
+            return ("dashed_round_rect", round(radius, 3))
         # Not a straight-sided frame. A thin closed band around one
         # fitted ellipse is still a safe oval lift (wide decorative
         # ellipse outlines hug no circle, so the circle test above
