@@ -297,35 +297,17 @@ def detect_internal_shapes(
             bg_color = np.median(inner_fg, axis=0).astype(np.float32)
         # A composite parent (multiple cards + connectors + a tinted
         # background) has no single dominant fill: the modal cluster
-        # covers well under 60 % of the foreground. And a crop that is
-        # mostly slide background (a lone decorative ring on white)
-        # makes the modal foreground cluster the shape's own colour —
-        # seeding with that inverts the mask. Either way, fall back to
-        # the corner slide-bg for segmentation: the parent's own body
-        # then surfaces as border-touching components that the
-        # candidate loop rejects, while genuinely nested cards / rings
-        # segment cleanly. Every kept candidate still has to pass the
-        # local `_fill_has_reasonable_parent_support` test here plus
-        # `clean_child_fill` (simulate + verify) in the caller before
-        # anything is inpainted. Bailing out on these parents entirely
-        # used to keep every nested card/ring baked into the parent
-        # forever (issue: 原生形状没有做好).
+        # covers well under 60 % of the foreground. Fall back to the
+        # corner slide-bg for segmentation there. A crop that is mostly
+        # slide background (a lone decorative circle on white) has the
+        # shape's own colour as the modal foreground cluster — seeding
+        # with that inverts the mask and the shape segments as the
+        # "background". The candidate loop below handles both seeds
+        # gracefully: when the modal seed produces NO candidates (the
+        # lone-primitive case) the caller retries with the slide-bg.
         if (len(close) < 0.60 * len(inner_fg)
                 or len(inner_fg) < 0.10 * flat_full.size):
             bg_color = slide_bg.astype(np.float32)
-
-    # "Different from bg" — diff >= 8 per channel. Lower than the main
-    # component threshold (S>12 / gray<245) so subtle inset rectangles
-    # like the dashed photo placeholders (interior ~237 vs card bg ~244)
-    # still surface.
-    diff = np.abs(crop.astype(int) - bg_color).max(axis=2)
-    different = diff >= 8
-
-    # No morph-close: bridging gaps tends to fuse placeholder/badge with
-    # adjacent row content via horizontal row separators or anti-aliased
-    # fringes, producing huge low-density components that fail the size
-    # filter.
-    filled = different
 
     # OCR text mask to filter out shapes that are predominantly text.
     # EXCLUDE short low-confidence OCR results (likely badge-as-text
@@ -345,59 +327,100 @@ def detect_internal_shapes(
             if tx2 > tx1 and ty2 > ty1:
                 text_mask[ty1:ty2, tx1:tx2] = True
 
-    n, labels, stats, _ = cv2.connectedComponentsWithStats(
-        filled.astype(np.uint8) * 255, 8)
-    shapes: list[tuple] = []
-    fill_jobs: list[tuple] = []
-    for i in range(1, n):
-        x, y, w_, h_, area = stats[i]
-        if w_ < min_dim or h_ < min_dim:
-            continue
-        if area < min_area:
-            continue
-        shape_mask = (labels == i).astype(np.uint8)
-        bbox_density = area / float(w_ * h_)
-        dim_cap = max_dim
-        if bbox_density < 0.55:
-            # Rings / box frames fill little of their bbox. Accept them
-            # only when the silhouette is a clean primitive, and give
-            # primitives a bigger size window (decorative circles are
-            # often much larger than ordinary UI chips).
-            if not _primitive_outline_ok(shape_mask, w_, h_):
+    def _collect(bg_color: np.ndarray) -> tuple[list[tuple], list[tuple]]:
+        # "Different from bg" — diff >= 8 per channel. Lower than the main
+        # component threshold (S>12 / gray<245) so subtle inset rectangles
+        # like the dashed photo placeholders (interior ~237 vs card bg
+        # ~244) still surface.
+        diff = np.abs(crop.astype(int) - bg_color).max(axis=2)
+        different = diff >= 8
+
+        # No morph-close: bridging gaps tends to fuse placeholder/badge
+        # with adjacent row content via horizontal row separators or
+        # anti-aliased fringes, producing huge low-density components
+        # that fail the size filter.
+        filled = different
+
+        n, labels, stats, _ = cv2.connectedComponentsWithStats(
+            filled.astype(np.uint8) * 255, 8)
+        shapes: list[tuple] = []
+        fill_jobs: list[tuple] = []
+        for i in range(1, n):
+            x, y, w_, h_, area = stats[i]
+            if w_ < min_dim or h_ < min_dim:
                 continue
-            dim_cap = max(dim_cap, int(round(600 * scale)))
-        if w_ > dim_cap or h_ > dim_cap:
-            continue
-        # Discard shapes that touch the crop border — those are usually
-        # the parent's own outline reaching the bbox edge, not an internal
-        # element.
-        if x == 0 or y == 0 or x + w_ == w or y + h_ == h:
-            continue
-        shape_mask_bool = labels == i
-        # Filter shapes that are almost entirely text. A single OCR text
-        # bbox getting picked up here would inflate the shape count for
-        # zero benefit (the text is already an editable text element).
-        text_overlap = int((shape_mask_bool & text_mask).sum())
-        if text_overlap > 0.7 * area:
-            continue
-        # Fill the shape's bbox (not just the mask) so antialiased edges
-        # outside the strict mask also get the bg colour. Pad ~2 px (at
-        # 720-scale) to ensure clean coverage when the shape mask sits a
-        # pixel inside the visible edge.
-        pad = max(1, int(round(2 * scale)))
-        rx1 = max(0, x - pad)
-        ry1 = max(0, y - pad)
-        rx2 = min(w, x + w_ + pad)
-        ry2 = min(h, y + h_ + pad)
-        rect = np.zeros((h, w), dtype=bool)
-        rect[ry1:ry2, rx1:rx2] = True
-        local_bg = _sample_local_bg(
-            crop, rx1, ry1, rx2, ry2, bg_color.astype(np.uint8), scale)
-        if not _fill_has_reasonable_parent_support(crop, rect, local_bg, scale):
-            continue
-        shapes.append((int(px1 + x), int(py1 + y),
-                       int(px1 + x + w_), int(py1 + y + h_)))
-        fill_jobs.append((rect, local_bg.astype(np.uint8)))
+            if area < min_area:
+                continue
+            shape_mask = (labels == i).astype(np.uint8)
+            bbox_density = area / float(w_ * h_)
+            dim_cap = max_dim
+            if bbox_density < 0.55:
+                # Rings / box frames fill little of their bbox. Accept
+                # them only when the silhouette is a clean primitive,
+                # and give primitives a bigger size window (decorative
+                # circles are often much larger than ordinary UI chips).
+                if not _primitive_outline_ok(shape_mask, w_, h_):
+                    continue
+                dim_cap = max(dim_cap, int(round(600 * scale)))
+            elif w_ > dim_cap or h_ > dim_cap:
+                # Solid primitives fill their bbox densely, so the
+                # sparse branch never sees them; a 320 px filled circle
+                # would be dropped by the ordinary 220 px chip window
+                # and stay baked into the parent forever. Extend the
+                # window for dense components that are still clean
+                # primitive silhouettes — same trade as the sparse
+                # branch.
+                if not _primitive_outline_ok(shape_mask, w_, h_):
+                    continue
+                dim_cap = max(dim_cap, int(round(600 * scale)))
+            if w_ > dim_cap or h_ > dim_cap:
+                continue
+            # Discard shapes that touch the crop border — those are
+            # usually the parent's own outline reaching the bbox edge,
+            # not an internal element.
+            if x == 0 or y == 0 or x + w_ == w or y + h_ == h:
+                continue
+            shape_mask_bool = labels == i
+            # Filter shapes that are almost entirely text. A single OCR
+            # text bbox getting picked up here would inflate the shape
+            # count for zero benefit (the text is already an editable
+            # text element).
+            text_overlap = int((shape_mask_bool & text_mask).sum())
+            if text_overlap > 0.7 * area:
+                continue
+            # Fill the shape's bbox (not just the mask) so antialiased
+            # edges outside the strict mask also get the bg colour. Pad
+            # ~2 px (at 720-scale) to ensure clean coverage when the
+            # shape mask sits a pixel inside the visible edge.
+            pad = max(1, int(round(2 * scale)))
+            rx1 = max(0, x - pad)
+            ry1 = max(0, y - pad)
+            rx2 = min(w, x + w_ + pad)
+            ry2 = min(h, y + h_ + pad)
+            rect = np.zeros((h, w), dtype=bool)
+            rect[ry1:ry2, rx1:rx2] = True
+            local_bg = _sample_local_bg(
+                crop, rx1, ry1, rx2, ry2, bg_color.astype(np.uint8), scale)
+            if not _fill_has_reasonable_parent_support(
+                    crop, rect, local_bg, scale):
+                continue
+            shapes.append((int(px1 + x), int(py1 + y),
+                           int(px1 + x + w_), int(py1 + y + h_)))
+            fill_jobs.append((rect, local_bg.astype(np.uint8)))
+        return shapes, fill_jobs
+
+    shapes, fill_jobs = _collect(bg_color)
+    if not shapes:
+        # Modal-seed inversion: a lone primitive on a mostly-slide-bg
+        # crop makes the modal foreground cluster the shape's own fill,
+        # so the shape itself segments as the "background" and yields
+        # zero candidates. Retry against the slide-bg, where the shape
+        # segments as a clean foreground component. Only used as a
+        # fallback — the modal seed stays primary (it is what lets
+        # badges/chips lift out of tinted parent panels).
+        slide_seed = slide_bg.astype(np.float32)
+        if not np.allclose(bg_color, slide_seed, atol=2.0):
+            shapes, fill_jobs = _collect(slide_seed)
     return shapes, fill_jobs
 
 

@@ -136,6 +136,21 @@ class DetectInternalPrimitiveTests(unittest.TestCase):
             min_dim=20, max_dim=220, min_area=400, scale=1.0)
         self.assertEqual(len(shapes), 2)
 
+    def test_lone_big_filled_circle_on_slide_bg_found(self) -> None:
+        """Modal-seed inversion: a 320 px filled circle on a white slide
+        makes the circle's own fill the modal foreground colour; seeding
+        with it erased the shape. The slide-bg retry must recover it —
+        dense primitives also need the wider 600 px window."""
+        img = _white(1280, 720)
+        cv2.circle(img, (950, 360), 160, ORANGE_BGR, -1)
+        shapes, _ = detect_internal_shapes(
+            img, 0, 0, 1280, 720,
+            min_dim=20, max_dim=220, min_area=400, scale=1.0)
+        self.assertEqual(len(shapes), 1)
+        x1, y1, x2, y2 = shapes[0]
+        self.assertGreater(x2 - x1, 300)
+        self.assertAlmostEqual(y2 - y1, x2 - x1, delta=8)
+
 
 class QuadRingClassificationTests(unittest.TestCase):
     def test_hollow_rect_frame_is_transparent_rect(self) -> None:
