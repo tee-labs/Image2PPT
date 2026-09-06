@@ -249,6 +249,23 @@ def _ring_candidate(crop_bgr: np.ndarray, fg: np.ndarray, bg: np.ndarray):
     p05, p50, p95 = np.percentile(r, [5, 50, 95])
     if p50 < 8.0 or (p95 - p05) / max(1.0, p50) > 0.65:
         return None  # not a ring band (arcs, half-discs, blobs)
+    # Square / rounded-square frames also produce a ring-like radial
+    # band, but their mid-radius swings with the angle (side vs corner:
+    # up to √2−1 ≈ 0.41). A true annulus keeps a near-constant mid
+    # radius at every angle. Binning by angle catches the frames so
+    # they fall through to the quad-ring classifier.
+    ang = np.arctan2(ys - cy, xs - cx)
+    bins = np.clip(((ang + np.pi) / (2 * np.pi) * 36).astype(int), 0, 35)
+    med_r = np.zeros(36)
+    for b in range(36):
+        sel = bins == b
+        if sel.any():
+            med_r[b] = float(np.median(r[sel]))
+    valid = med_r[med_r > 0]
+    if (len(valid) >= 24
+            and (valid.max() - valid.min())
+            / max(1.0, float(np.median(valid))) > 0.18):
+        return None  # straight-sided frame → quad path
     # Stroke colour: thin rings carry a wide anti-alias halo that blends
     # toward the background, so sample only the stroke CORE — the ring
     # pixels farthest from bg — and require the core itself to be one
@@ -264,6 +281,95 @@ def _ring_candidate(crop_bgr: np.ndarray, fg: np.ndarray, bg: np.ndarray):
         return None
     return ("oval", None, _bgr_to_hex(line_bgr), 0.0,
             float(np.percentile(r, 95) - np.percentile(r, 5)))
+
+
+def _quad_ring_candidate(crop_bgr: np.ndarray, fg: np.ndarray,
+                         bg: np.ndarray):
+    """Classify a rectangular ring (box frame) silhouette.
+
+    ``_ring_candidate`` only accepts near-square annuli — a wide hollow
+    rectangle frame (aspect 2:1, 3:1 …) fails its aspect gate and the
+    frame stays a flattened PNG. This parallel classifier covers the
+    quad case: one dominant component, a centred interior hole, ink on
+    all four straight sides, one uniform stroke colour. Returns
+    ``("rect"|"round_rect", None, line_hex, radius, thickness_px)`` or
+    None.
+    """
+    h, w = fg.shape[:2]
+    fg_u8 = fg.astype(np.uint8)
+    n_labels, labels = cv2.connectedComponents(fg_u8, 8)
+    if n_labels - 1 == 0:
+        return None
+    counts = np.bincount(labels.ravel())[1:]
+    if int(counts.max()) < 0.85 * int(fg.sum()):
+        return None  # scattered fragments, not a frame
+    closed = cv2.morphologyEx(fg_u8, cv2.MORPH_CLOSE,
+                              np.ones((3, 3), np.uint8))
+    inv = (~closed.astype(bool)).astype(np.uint8)
+    n_inv, inv_labels = cv2.connectedComponents(inv, 4)
+    border_labels = set(inv_labels[0, :].tolist()) \
+        | set(inv_labels[-1, :].tolist()) \
+        | set(inv_labels[:, 0].tolist()) \
+        | set(inv_labels[:, -1].tolist())
+    hole = np.isin(
+        inv_labels, [i for i in range(1, n_inv) if i not in border_labels])
+    hole_px = int(hole.sum())
+    fg_px = int(fg.sum())
+    if hole_px < max(80, int(0.25 * fg_px)):
+        return None  # filled solid, L-shape, or open frame
+    ys, xs = np.nonzero(fg)
+    hys, hxs = np.nonzero(hole)
+    if np.hypot(hxs.mean() - xs.mean(), hys.mean() - ys.mean()) \
+            > 0.20 * max(w, h):
+        return None  # off-centre hole (not a simple frame)
+    # Ink must hug all four bbox edges (straight sides). Measure the
+    # per-column / per-row nearest-ink distance to the edge rather than
+    # band fill: a 2-3 px stroke sitting exactly on the crop edge fills
+    # only a third of a wider band.
+    tol = max(2, min(h, w) // 24)
+    top = np.argmax(fg_u8, axis=0)
+    bot = np.argmax(fg_u8[::-1, :], axis=0)
+    left = np.argmax(fg_u8, axis=1)
+    right = np.argmax(fg_u8[:, ::-1], axis=1)
+    col_any = fg_u8.any(axis=0)
+    row_any = fg_u8.any(axis=1)
+    f_top = float(((top <= tol) & col_any).sum()) / max(1, w)
+    f_bot = float(((bot <= tol) & col_any).sum()) / max(1, w)
+    f_left = float(((left <= tol) & row_any).sum()) / max(1, h)
+    f_right = float(((right <= tol) & row_any).sum()) / max(1, h)
+    if min(f_top, f_bot, f_left, f_right) < 0.65:
+        return None  # curved or open silhouette, not a frame
+    # One uniform stroke colour, sampled from the stroke core (farthest
+    # from bg) so the anti-alias halo doesn't wash out the estimate.
+    px_all = crop_bgr[fg].reshape(-1, 3).astype(np.int16)
+    dist_bg = np.abs(px_all - bg[None, :]).max(axis=1)
+    core = px_all[dist_bg >= np.percentile(dist_bg, 60)]
+    if len(core) < 12:
+        return None
+    line_bgr = np.median(core, axis=0).astype(np.int16)
+    spread = np.abs(core - line_bgr[None, :]).max(axis=1)
+    if float((spread <= 36).mean()) < 0.75:
+        return None
+    # Corner shape from the stroke's closest approach to the bbox
+    # corner: a sharp frame's stroke runs into the corner (dist ≈ 0),
+    # a rounded corner keeps a stand-off of r·(√2−1)·side. Patch-fill
+    # metrics are unreliable here — the hole leaks into the corner
+    # patch through the inner arc.
+    c = max(3, int(round(min(h, w) * 0.25)))
+    corner_ys, corner_xs = np.nonzero(fg_u8[:c, :c] > 0)
+    if len(corner_xs):
+        dist = float(np.min(np.hypot(corner_xs, corner_ys)))
+    else:
+        dist = tol * 4.0
+    if dist <= 2.5:
+        kind, radius = "rect", 0.0
+    else:
+        radius = min(0.5, max(0.08, (dist + 2.0) / 0.414 / min(h, w)))
+        kind, radius = "round_rect", round(radius, 3)
+    # Stroke thickness ≈ fg px / approximate centerline length.
+    thickness = fg_px / float(max(1.0, 2.0 * (w + h)))
+    return (kind, None, _bgr_to_hex(line_bgr), radius,
+            float(min(max(thickness, 1.0), 40.0)))
 
 
 def classify_filled_shape(crop_bgr: np.ndarray):
@@ -301,14 +407,29 @@ def classify_filled_shape(crop_bgr: np.ndarray):
               | ((hsv[:, :, 1] > 10) & (diff_white > 4)))
         if float(fg.mean()) < 0.30:
             # Sparse silhouettes (thin rings) can't reach the filled
-            # branches, but the ring branch may still claim them.
+            # branches, but the ring branches may still claim them.
             if float(fg.mean()) < 0.02:
                 return None
-            return _ring_candidate(crop_bgr, fg, bg)
+            ring = _ring_candidate(crop_bgr, fg, bg)
+            if ring is not None:
+                return ring
+            return _quad_ring_candidate(crop_bgr, fg, bg)
+    elif float(fg.mean()) > 0.60:
+        # Hollow frame touching the crop edge: the border ring sampled
+        # the frame's stroke, inverting the mask (interior reads as
+        # foreground). Re-segment against the white reference and keep
+        # the result when it actually separates a sparse silhouette.
+        cand = (((gray < 250) & (diff_white > 6))
+                | ((hsv[:, :, 1] > 10) & (diff_white > 4)))
+        if float(cand.mean()) < float(fg.mean()):
+            fg = cand
     if float(fg.mean()) < 0.55:
         ring = _ring_candidate(crop_bgr, fg, bg)
         if ring is not None:
             return ring
+        quad = _quad_ring_candidate(crop_bgr, fg, bg)
+        if quad is not None:
+            return quad
     # Only clearly visible solids qualify: ghost-pale blocks (dashed
     # photo placeholders, faint tints barely off the panel colour) lose
     # their border detail as a flat native fill, so keep them as PNGs.

@@ -366,8 +366,13 @@ class InventoryBuilder:
             if len(sub) == 1:
                 cw, ch = x2 - x1, y2 - y1
                 if cw >= self.img_w * 0.95 and ch >= self.img_h * 0.95:
-                    # Whole-image component → BACKGROUND.
+                    # Whole-image component → BACKGROUND. Still scan for
+                    # internal primitives: circles/rings/cards that touch
+                    # other content merge into this component, and without
+                    # this scan they stay baked into the background PNG
+                    # forever (issue: 原生形状没有做好).
                     self.background_records.append((x1, y1, x2, y2))
+                    self._scan_internal_shapes_inplace(x1, y1, x2, y2)
                     continue
                 self._append_foreground_record(x1, y1, x2, y2)
                 self._scan_subicons_inplace(x1, y1, x2, y2)
