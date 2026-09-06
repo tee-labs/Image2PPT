@@ -107,6 +107,9 @@ def valign(value: str | None) -> MSO_ANCHOR:
 
 
 def shape_type(value: str | None) -> MSO_SHAPE:
+    text = (value or "rect").lower()
+    if text.startswith("dashed_"):
+        text = text[len("dashed_"):]
     return {
         "rect": MSO_SHAPE.RECTANGLE,
         "rectangle": MSO_SHAPE.RECTANGLE,
@@ -118,10 +121,17 @@ def shape_type(value: str | None) -> MSO_SHAPE:
         "diamond": MSO_SHAPE.DIAMOND,
         "triangle": MSO_SHAPE.ISOSCELES_TRIANGLE,
         "trapezoid": MSO_SHAPE.TRAPEZOID,
+        "trapezoid_down": MSO_SHAPE.TRAPEZOID,
         "parallelogram": MSO_SHAPE.PARALLELOGRAM,
         "pentagon": MSO_SHAPE.REGULAR_PENTAGON,
         "hexagon": MSO_SHAPE.HEXAGON,
-    }.get((value or "rect").lower(), MSO_SHAPE.RECTANGLE)
+        "homeplate": MSO_SHAPE.PENTAGON,
+        "chevron": MSO_SHAPE.CHEVRON,
+        "right_arrow": MSO_SHAPE.RIGHT_ARROW,
+        "left_arrow": MSO_SHAPE.LEFT_ARROW,
+        "up_arrow": MSO_SHAPE.UP_ARROW,
+        "down_arrow": MSO_SHAPE.DOWN_ARROW,
+    }.get(text, MSO_SHAPE.RECTANGLE)
 
 
 def dash_style(value: str | None):
@@ -432,8 +442,21 @@ class Builder:
         # (parallelogram/hexagon) because 0.0 would deform them.
         if len(shape.adjustments) and float(el.get("radius") or 0) > 0:
             shape.adjustments[0] = float(el["radius"])
-        if "rotation" in el:
-            shape.rotation = float(el["rotation"])
+        # Block arrows carry measured shaft/head proportions.
+        for i, adj in enumerate(el.get("adjustments") or []):
+            if i < len(shape.adjustments):
+                shape.adjustments[i] = float(adj)
+        # trapezoid_down is MSO's trapezoid flipped (short side on the
+        # bottom); chevron/homeplate/arrows need no extra handling.
+        rotation = float(el.get("rotation") or 0)
+        if el.get("shape") == "trapezoid_down":
+            rotation = (rotation + 180.0) % 360.0
+        if str(el.get("shape") or "").startswith("dashed_"):
+            dash = dash_style("dash")
+            if dash:
+                shape.line.dash_style = dash
+        if rotation:
+            shape.rotation = rotation
         if "shadow" in el:
             shape.shadow.inherit = bool(el["shadow"])
         elif el.get("shadow_off", True):
@@ -541,12 +564,30 @@ class Builder:
 
     def add_line(self, slide, el: dict[str, Any]) -> None:
         if "points" in el:
-            x1, y1, x2, y2 = el["points"]
+            points = [float(v) for v in el["points"]]
         else:
             left, top, width, height = el["box"]
-            x1, y1, x2, y2 = left, top, left + width, top + height
-        line = slide.shapes.add_connector(MSO_CONNECTOR.STRAIGHT, self.x(x1), self.y(y1), self.x(x2), self.y(y2))
-        line.name = el.get("name", "line")
+            points = [left, top, left + width, top + height]
+        if len(points) > 4:
+            # Elbow polyline (3+ vertices): one native freeform so the
+            # bend geometry survives exactly (an elbow connector could
+            # only place its bend at an adjustable midpoint).
+            line = slide.shapes.build_freeform(
+                self.x(points[0]), self.y(points[1]), scale=1.0)
+            line.add_line_segments(
+                [(self.x(px), self.y(py))
+                 for px, py in zip(points[2::2], points[3::2])],
+                close=False,
+            )
+            line = line.convert_to_shape()
+            line.name = el.get("name", "line")
+            line.fill.background()
+        else:
+            x1, y1, x2, y2 = points
+            line = slide.shapes.add_connector(
+                MSO_CONNECTOR.STRAIGHT, self.x(x1), self.y(y1),
+                self.x(x2), self.y(y2))
+            line.name = el.get("name", "line")
         col = rgb(el.get("line", el.get("color", "#000000")))
         if col is not None:
             line.line.color.rgb = col

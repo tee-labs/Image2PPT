@@ -43,8 +43,10 @@ from layout.outline import (  # noqa: E402
     _sample_outline_color,
     _split_filled_outline_rows,
     _rotated_rect_candidate,
+    arrow_geometry,
     classify_filled_shape,
     classify_connector_line,
+    classify_elbow_line,
     classify_outline_ring,
 )
 from layout.text_emit import _emit_text_element_record  # noqa: E402
@@ -614,15 +616,22 @@ class LayoutBuilder:
             # the unchanged paths below.
             if role == "connector":
                 line_hit = classify_connector_line(crop)
+                if line_hit is None:
+                    # L-shaped elbows: same native-line contract, three
+                    # points instead of two.
+                    line_hit = classify_elbow_line(crop)
                 if line_hit is not None:
-                    (lx1, ly1, lx2, ly2), line_hex, width_px, dash, arrow \
-                        = line_hit
+                    points_flat, line_hex, width_px, dash, arrow = line_hit
+                    pts: list[int] = []
+                    for px, py in zip(points_flat[0::2],
+                                      points_flat[1::2]):
+                        pts.append(int(x1) + int(px))
+                        pts.append(int(y1) + int(py))
                     line_el = {
                         "type": "line", "name": el["id"],
                         "box": [int(x1), int(y1),
                                 int(x2 - x1), int(y2 - y1)],
-                        "points": [int(x1) + lx1, int(y1) + ly1,
-                                   int(x1) + lx2, int(y1) + ly2],
+                        "points": pts,
                         "line": line_hex,
                         "line_width": max(0.75, width_px * self.pt_per_px),
                     }
@@ -670,6 +679,12 @@ class LayoutBuilder:
                 if line_px > 0:
                     shape_el["line_width"] = max(
                         0.75, line_px * self.pt_per_px)
+                # Block arrows carry shaft/head proportions measured off
+                # the silhouette so the autoshape matches the raster.
+                if shape_kind.endswith("_arrow"):
+                    geom = arrow_geometry(crop)
+                    if geom is not None:
+                        shape_el["adjustments"] = [geom[1], geom[2]]
                 self.front_shape_elements.append(shape_el)
                 return
         if has_mask and not keep_outline_full_crop:
