@@ -76,9 +76,10 @@ class PolygonLiftTests(unittest.TestCase):
             [[30, 60], [60, 10], [130, 30], [100, 80]])], BLUE_BGR)
         self.assertIsNone(classify_filled_shape(img))
 
-    def test_concave_star_stays_png(self) -> None:
+    def test_concave_star_lifts(self) -> None:
+        # Point-up 5-point stars used to stay PNG; the alternating-radius
+        # star classifier now lifts them to native STAR_5_POINT shapes.
         img = _white(100, 100)
-        pts = cv2.boxPoints(((50, 50), (90, 90), 0))
         star = []
         cx, cy = 50.0, 50.0
         for i in range(10):
@@ -87,7 +88,7 @@ class PolygonLiftTests(unittest.TestCase):
             star.append([cx + r * np.cos(ang), cy - r * np.sin(ang)])
         cv2.fillPoly(img, [np.array(star, dtype=np.int32)],
                      (60, 60, 60))
-        self.assertIsNone(classify_filled_shape(img))
+        self.assertEqual(classify_filled_shape(img)[0], "star_5")
 
 
 class ConnectorLineTests(unittest.TestCase):

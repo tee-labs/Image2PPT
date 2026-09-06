@@ -174,8 +174,10 @@ class DashedFrameTests(unittest.TestCase):
         img = _img(300, 160)
         cv2.rectangle(img, (0, 0), (299, 159), BLUE_BGR, 5)
         self.assertEqual(classify_filled_shape(img)[0], "rect")
-        self.assertEqual(classify_outline_ring(img, (0, 0, 300, 160))[0],
-                         "round_rect")
+        # A sharp-cornered frame lifts as a plain rect — the old 0.08
+        # minimum radius rounded corners the source does not have.
+        self.assertEqual(classify_outline_ring(img, (0, 0, 300, 160)),
+                         ("rect", 0.0))
 
 
 class ElbowConnectorTests(unittest.TestCase):
