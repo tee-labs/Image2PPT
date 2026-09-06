@@ -229,7 +229,9 @@ class ClassifyOutlineRingTests(unittest.TestCase):
         self.assertEqual(kind, "oval")
         self.assertEqual(radius, 0.0)
 
-    def test_square_ring_is_round_rect(self) -> None:
+    def test_square_ring_is_rect(self) -> None:
+        # A sharp-cornered frame lifts as a plain rect (phase 3: the old
+        # 0.08 minimum radius rounded corners the source does not have).
         source = _white(200)
         cv2.rectangle(source, (40, 40), (160, 160), (180, 100, 40), 4)
         mask = np.zeros((200, 200), dtype=np.uint8)
@@ -241,10 +243,7 @@ class ClassifyOutlineRingTests(unittest.TestCase):
             result = classify_outline_ring(
                 source, (40, 40, 160, 160), str(mask_path))
         self.assertIsNotNone(result)
-        kind, radius = result
-        self.assertEqual(kind, "round_rect")
-        self.assertGreaterEqual(radius, 0.08)
-        self.assertLessEqual(radius, 0.5)
+        self.assertEqual(result, ("rect", 0.0))
 
     def test_concentric_rings_rejected(self) -> None:
         source = _white(200)

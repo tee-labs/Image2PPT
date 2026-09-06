@@ -86,15 +86,14 @@ class RadiusNormalizationTests(unittest.TestCase):
 
 
 class WideOutlineRingTests(unittest.TestCase):
-    def test_wide_rect_ring_outline_is_round_rect(self) -> None:
+    def test_wide_rect_ring_outline_is_rect(self) -> None:
+        """A sharp-cornered wide frame lifts as a plain rect (the old
+        0.08 minimum radius rounded corners the source does not have)."""
         source = _white(720, 400)
         cv2.rectangle(source, (60, 100), (659, 339), (205, 160, 90), 3)
         result = classify_outline_ring(source, (60, 100, 660, 340))
         self.assertIsNotNone(result)
-        kind, radius = result
-        self.assertEqual(kind, "round_rect")
-        self.assertGreaterEqual(radius, 0.08)
-        self.assertLessEqual(radius, 0.5)
+        self.assertEqual(result, ("rect", 0.0))
 
     def test_wide_ellipse_ring_outline_is_oval(self) -> None:
         """A wide ellipse outline used to get a blind round_rect drawn

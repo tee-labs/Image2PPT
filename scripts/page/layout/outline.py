@@ -588,6 +588,138 @@ def _regular_polygon_slots(pts: np.ndarray, n: int,
             and len(left) == 1 and len(right) == 1)
 
 
+def _star_candidate(filled: np.ndarray) -> str | None:
+    """Lift a concave star silhouette (4-point sparkle / 5-point star).
+
+    The convex polygon gates reject stars outright (reflex vertices), so
+    stars need their own structural test: a vertex-stable approx whose
+    vertices, sorted by angle around the centroid, strictly alternate
+    between one constant outer radius and one constant inner radius.
+    MSO draws STAR_4_POINT and STAR_5_POINT point-up, so an outer
+    vertex must sit in the top-centre slot — a down- or side-pointing
+    raster star would render at the wrong angle and stays PNG.
+    Returns ``"star_4"`` / ``"star_5"`` or None.
+    """
+    h, w = filled.shape[:2]
+    if min(h, w) < 20:
+        return None
+    cnts, _ = cv2.findContours(
+        filled.astype(np.uint8) * 255, cv2.RETR_EXTERNAL,
+        cv2.CHAIN_APPROX_SIMPLE)
+    if not cnts:
+        return None
+    cnt = max(cnts, key=cv2.contourArea)
+    # Thin star arms lose ~10% of their area to rasterization, so the
+    # silhouette gate is slightly looser than the convex-polygon path.
+    if cv2.contourArea(cnt) < 0.85 * float(filled.sum()):
+        return None
+    peri = cv2.arcLength(cnt, True)
+    if peri <= 0:
+        return None
+    approxes = [cv2.approxPolyDP(cnt, eps * peri, True)
+                for eps in (0.012, 0.020, 0.032)]
+    if len({len(a) for a in approxes}) != 1:
+        return None  # vertex count unstable across epsilons -> blob
+    pts = approxes[0].reshape(-1, 2).astype(np.float64)
+    n = len(pts)
+    if n not in (8, 10):
+        return None
+    c = pts.mean(axis=0)
+    order = np.argsort(np.arctan2(pts[:, 1] - c[1], pts[:, 0] - c[0]))
+    pts = pts[order]
+    r = np.hypot(pts[:, 0] - c[0], pts[:, 1] - c[1])
+    mid = 0.5 * (r.max() + r.min())
+    outer = r > mid
+    if any(outer[i] == outer[i - 1] for i in range(n)):
+        return None  # radii do not alternate -> not a star
+    hi = r[outer]
+    lo = r[~outer]
+    if hi.min() < 0.30 * min(h, w) * 0.5:
+        return None
+    # Arm consistency, scale-aware: a thin sparkle's inner vertices are
+    # a few px from the centroid, so raster jitter is proportionally
+    # large there — absolute floors instead of ratios for the small
+    # radii.
+    if hi.max() - hi.min() > max(3.0, 0.30 * float(hi.mean())):
+        return None  # arms inconsistent -> sunburst / flower, not a star
+    if lo.max() - lo.min() > max(3.0, 0.55 * float(lo.mean())):
+        return None
+    ratio = float(lo.mean()) / max(1e-6, float(hi.mean()))
+    if not 0.10 <= ratio <= 0.60:
+        return None
+    out_pts = pts[outer]
+    # Point-up apex in the top-centre slot (MSO orientation). The slot
+    # is narrow (±0.10 w): a star rotated ~36° also throws an outer
+    # vertex near the top, but visibly off-centre.
+    apex = [p for p in out_pts
+            if abs(p[0] - (w - 1) / 2.0) <= 0.10 * w and p[1] <= 0.20 * h]
+    if len(apex) != 1:
+        return None
+    if n == 10:
+        return "star_5"
+    # 4-point sparkle: outer vertices at all four edge midpoints.
+    cx, cy = (w - 1) / 2.0, (h - 1) / 2.0
+    slots = {"top": False, "bottom": False, "left": False, "right": False}
+    tol = max(3.0, 0.14 * min(h, w))
+    for x, y in out_pts:
+        if abs(x - cx) <= tol and y < cy:
+            slots["top"] = True
+        elif abs(x - cx) <= tol and y >= cy:
+            slots["bottom"] = True
+        elif abs(y - cy) <= tol and x < cx:
+            slots["left"] = True
+        elif abs(y - cy) <= tol and x >= cx:
+            slots["right"] = True
+    if all(slots.values()):
+        return "star_4"
+    return None
+
+
+def _border_stroke_measure(crop_bgr: np.ndarray, filled: np.ndarray,
+                           fill_bgr: np.ndarray):
+    """Measure the border-stroke thickness and colour of a solid lift.
+
+    Solid shapes used to render with the builder's fixed 0.9 pt border,
+    which leaves 2-4 px raster strokes (the classic bordered deck card)
+    visibly thinner than the source. Estimate the stroke width as the
+    area of silhouette pixels whose colour departs from the fill,
+    divided by the outer contour perimeter; the stroke colour is the
+    median of those pixels. The departing pixels must form ONE uniform
+    colour distinct from the fill — the anti-alias halo of a borderless
+    solid spans a fill→background blend and fails the uniformity test,
+    keeping the fixed default. Returns ``(thickness_px, line_bgr)`` or
+    None when no distinct stroke exists.
+
+    This also repairs the full-bleed case where ``_vet_fill_colors``
+    cannot sample a boundary ring at all (an all-foreground crop erodes
+    to itself, so the ring is empty and the line colour falls back to
+    the fill).
+    """
+    cnts, _ = cv2.findContours(
+        filled.astype(np.uint8) * 255, cv2.RETR_EXTERNAL,
+        cv2.CHAIN_APPROX_SIMPLE)
+    if not cnts:
+        return None
+    peri = cv2.arcLength(max(cnts, key=cv2.contourArea), True)
+    if peri < 32:
+        return None
+    diff = np.abs(
+        crop_bgr.astype(np.int16) - fill_bgr[None, None]).max(axis=2)
+    stroke = filled & (diff > 30)
+    count = int(stroke.sum())
+    if count < 24 or count > 0.35 * float(filled.sum()):
+        return None
+    px = crop_bgr[stroke].reshape(-1, 3).astype(np.int16)
+    med = np.median(px, axis=0).astype(np.int16)
+    if float(np.max(np.abs(med - fill_bgr))) <= 30:
+        return None
+    spread = np.abs(px - med[None, :]).max(axis=1)
+    if float((spread <= 36).mean()) < 0.75:
+        return None
+    return (round(float(min(count / peri, 0.20 * min(filled.shape))), 2),
+            med)
+
+
 def _polygon_candidate(filled: np.ndarray) -> str | None:
     """Convex-polygon lift for silhouettes the rect/oval gates rejected.
 
@@ -882,7 +1014,17 @@ def _vet_fill_colors(crop_bgr: np.ndarray, fg: np.ndarray,
     if len(pixels) < 24:
         return None
     fill_bgr = _dominant_color(crop_bgr, fg)
-    spread = np.abs(pixels.astype(np.int16) - fill_bgr[None, :]).max(axis=1)
+    # Fill uniformity is judged on the 1px-eroded interior: the raw
+    # silhouette carries an anti-alias / JPEG halo that blends toward
+    # the background and is expected to depart from the fill. Baked-in
+    # content (glyphs, photos) stays guarded by the deep-core check
+    # below.
+    inner1 = cv2.erode(fg.astype(np.uint8) * 255,
+                       np.ones((3, 3), np.uint8),
+                       iterations=1) > 0
+    uniform = crop_bgr[inner1 if int(inner1.sum()) >= 24 else fg] \
+        .reshape(-1, 3)
+    spread = np.abs(uniform.astype(np.int16) - fill_bgr[None, :]).max(axis=1)
     if float((spread <= 30).mean()) < 0.80:
         return None  # gradient / photo / multi-colour content
     # Interior must be uniform too: a glyph or photo baked inside the
@@ -1092,7 +1234,14 @@ def classify_connector_line(crop_bgr: np.ndarray):
     width_est = len(pts) / max(1.0, length)
     if length < 24 or width_est > max(6.0, 0.20 * length):
         return None
-    p05, p95 = np.percentile(perp, [4, 96])
+    # Straightness is judged on the middle half of the axis: a large
+    # arrowhead at one end inflates the whole-silhouette perp spread
+    # (and with it width_est), while elbow bends sit mid-stroke and
+    # still fail here.
+    zone = (proj >= proj.min() + 0.25 * length) \
+        & (proj <= proj.max() - 0.25 * length)
+    spread_pts = perp[zone] if int(zone.sum()) >= 12 else perp
+    p05, p95 = np.percentile(spread_pts, [4, 96])
     if (p95 - p05) > max(5.0, 2.2 * width_est + 2.0):
         return None  # elbow polyline / L-shape / blob
     # Arrowhead: perp width per axial segment; a single-end bulge over
@@ -1112,6 +1261,21 @@ def classify_connector_line(crop_bgr: np.ndarray):
     mid_w = mid[len(mid) // 2] if mid else 0.0
     arrow = None
     head_min = max(6.0, 2.5 * mid_w)
+    # An end bulge must taper along the axis (a head); a bulge confined
+    # to one stroke-thick axial run is an L-bend arm pushed outside the
+    # mid-band — reject so the elbow classifier claims the stroke
+    # instead of the straight emit losing the bend.
+    def _blunt_arm(from_start: bool) -> bool:
+        w_edge = seg_w[0] if from_start else seg_w[-1]
+        if w_edge <= head_min:
+            return False
+        sel = (proj <= edges[1]) if from_start else (proj >= edges[k - 1])
+        if not sel.any():
+            return False
+        span = float(proj[sel].max() - proj[sel].min())
+        return span <= max(3.0, 2.5 * max(1.0, mid_w))
+    if _blunt_arm(True) or _blunt_arm(False):
+        return None
     if seg_w[0] > head_min and seg_w[-1] > head_min:
         arrow = "both"
     elif seg_w[-1] > head_min:
@@ -1137,8 +1301,8 @@ def classify_connector_line(crop_bgr: np.ndarray):
     if len(on_runs) >= 3 and len(gaps) >= 2:
         on_med = float(np.median(on_runs))
         dash = "dot" if on_med <= 3.0 else "dash"
-    if arrow and dash:
-        return None  # dashed arrows: rare; keep the pixel-perfect PNG
+    # Dash and arrow styling are independent layout keys, so a dashed
+    # arrow (roadmap / dependency connectors) lifts with both.
     px_all = crop_bgr[fg].reshape(-1, 3).astype(np.int16)
     dist_bg = np.abs(px_all - bg[None, :]).max(axis=1)
     core = px_all[dist_bg >= np.percentile(dist_bg, 50)]
@@ -1303,40 +1467,37 @@ def classify_filled_shape(crop_bgr: np.ndarray):
     ])
     bg = np.median(border, axis=0).astype(np.int16)
     fg = np.abs(crop_bgr.astype(np.int16) - bg[None, None]).max(axis=2) > 14
-    if float(fg.mean()) < 0.30:
-        # The shape touches every crop edge, so the border ring sampled
-        # the shape's own colour. Fall back to white-diff segmentation.
-        cand = (((gray < 250) & (diff_white > 6))
-                | ((hsv[:, :, 1] > 10) & (diff_white > 4)))
-        if float(cand.mean()) < 0.30:
-            # Sparse silhouettes (thin rings, dashed frames) can't reach
-            # the filled branches, but the ring branches may still claim
-            # them — the ring classifiers carry their own structure and
-            # colour gates, so a low floor is safe here. bg must be
-            # re-sampled EXCLUDING foreground border pixels: the border
-            # ring is half dash/shape ink here, and a shape-coloured bg
-            # would invert the colour-core sampling.
-            if float(cand.mean()) < 0.02:
-                return None
-            sparse_bg = _bg_excluding_fg(crop_bgr, cand)
-            ring = _ring_candidate(crop_bgr, cand, sparse_bg)
-            if ring is not None:
-                return ring
-            quad = _quad_ring_candidate(crop_bgr, cand, sparse_bg)
-            if quad is not None:
-                return quad
-            return _ellipse_ring_candidate(crop_bgr, cand, sparse_bg)
+    # White-diff reference segmentation, used to repair the two ways the
+    # border-sampled mask inverts: a full-bleed shape makes the border
+    # ring sample the shape's own colour (the mask keeps the background
+    # instead — visible as the white-diff ink dominating by ≫ 2×), and
+    # so does a hollow frame touching the crop edge. Concave primitives
+    # (five-point stars ≈ 0.29 ink, thin four-point sparkles ≈ 0.15)
+    # keep their correctly-sampled mask and flow through the ring
+    # branches and the filled path below; only near-empty crops are
+    # rejected outright.
+    cand = (((gray < 250) & (diff_white > 6))
+            | ((hsv[:, :, 1] > 10) & (diff_white > 4)))
+    if float(fg.mean()) < 0.02 and float(cand.mean()) < 0.02:
+        return None
+    # Only repair a true inversion: the border-sampled mask must be the
+    # COMPLEMENT of the white-diff ink (most fg pixels outside cand), or
+    # be empty because the shape fills its whole bbox. On a tinted
+    # background cand covers the whole tint as well, and "repairing"
+    # would swallow the card instead of the sparse shape on it.
+    fg_n = float(fg.sum())
+    inverted = (
+        float(cand.mean()) >= 0.30
+        and float(cand.mean()) > 2.0 * float(fg.mean())
+        and (fg_n < 24.0
+             or float((fg & ~cand).sum()) / max(1.0, fg_n) >= 0.50))
+    if inverted:
         fg = cand
-    elif float(fg.mean()) > 0.60:
-        # Hollow frame touching the crop edge: the border ring sampled
-        # the frame's stroke, inverting the mask (interior reads as
-        # foreground). Re-segment against the white reference and keep
-        # the result when it actually separates a sparse silhouette.
-        cand = (((gray < 250) & (diff_white > 6))
-                | ((hsv[:, :, 1] > 10) & (diff_white > 4)))
-        if float(cand.mean()) < float(fg.mean()):
-            fg = cand
-            bg = _bg_excluding_fg(crop_bgr, fg)
+        bg = _bg_excluding_fg(crop_bgr, fg)
+    elif (float(fg.mean()) > 0.60
+          and float(cand.mean()) < float(fg.mean())):
+        fg = cand
+        bg = _bg_excluding_fg(crop_bgr, fg)
     if float(fg.mean()) < 0.55:
         ring = _ring_candidate(crop_bgr, fg, bg)
         if ring is not None:
@@ -1377,25 +1538,38 @@ def classify_filled_shape(crop_bgr: np.ndarray):
     if colors is None:
         return None
     fill_hex, line_hex = colors
+    fill_bgr = np.array([int(fill_hex[5:7], 16),
+                         int(fill_hex[3:5], 16),
+                         int(fill_hex[1:3], 16)], np.int16)
+    stroke = _border_stroke_measure(crop_bgr[ty1:ty2, tx1:tx2],
+                                    filled, fill_bgr)
+    stroke_px = stroke[0] if stroke is not None else 0.0
+    if stroke is not None:
+        line_hex = _bgr_to_hex(stroke[1])
     # Convex polygons the rect/oval gates can't express (isoceles
     # triangles, diamonds, trapezoids, parallelograms, regular
     # pentagons/hexagons — cov lands between the bands).
     # Runs after the colour gates so fill/line are already vetted.
     poly = _polygon_candidate(filled)
     if poly is not None:
-        return (poly, fill_hex, line_hex, 0.0, 0.0)
+        return (poly, fill_hex, line_hex, 0.0, stroke_px)
+    # Concave stars (sparkles, rating stars) fail the convex gates and
+    # carry their own alternating-radius structural test.
+    star = _star_candidate(filled)
+    if star is not None:
+        return (star, fill_hex, line_hex, 0.0, stroke_px)
     # Solid block arrows (process-flow chevron arrows, step pointers)
     # are concave so the polygon gates reject them; the structural
     # stem+head profile test lifts them instead. The builder re-measures
     # shaft/head adjustments via arrow_geometry().
     arrow = _arrow_candidate(filled)
     if arrow is not None:
-        return (arrow[0], fill_hex, line_hex, 0.0, 0.0)
+        return (arrow[0], fill_hex, line_hex, 0.0, stroke_px)
     # Thresholds calibrated on rasterized squares with corner radius
     # r/s in [0, 0.5]: corner(c=0.12) falls monotonically 1.0 -> 0.0
     # while cov falls 1.0 -> 0.785 (circle). Mid gaps fall back to PNG.
     if cov >= 0.90 and corner >= 0.55:
-        return ("rect", fill_hex, line_hex, 0.0, 0.0)
+        return ("rect", fill_hex, line_hex, 0.0, stroke_px)
     if cov >= 0.84 and corner <= 0.45:
         # Corner radius from the area lost to rounding:
         # 1 - cov = (4 - pi) * r^2 / (w * h); the MSO adjustment is
@@ -1406,7 +1580,8 @@ def classify_filled_shape(crop_bgr: np.ndarray):
             max(0.0, 1.0 - cov) * (tw * th_) / (4.0 - math.pi))
         radius = radius / max(1.0, min(th_, tw))
         radius = min(0.5, max(0.08, radius))
-        return ("round_rect", fill_hex, line_hex, round(radius, 3), 0.0)
+        return ("round_rect", fill_hex, line_hex, round(radius, 3),
+                stroke_px)
     if 0.60 <= cov <= 0.835 and corner <= 0.03:
         # The ellipse signature (cov ≈ pi/4, empty corners) is shared
         # by rotated polygons with a similar footprint; require the
@@ -1416,7 +1591,7 @@ def classify_filled_shape(crop_bgr: np.ndarray):
                       np.ones((3, 3), np.uint8),
                       iterations=2) > 0)
         if _ellipse_band_fit(boundary_ring) is not None:
-            return ("oval", fill_hex, line_hex, 0.0, 0.0)
+            return ("oval", fill_hex, line_hex, 0.0, stroke_px)
     return None
 
 
@@ -1492,7 +1667,22 @@ def classify_outline_ring(
         _straight(mask[:, :band], 1),
         _straight(mask[:, -band:], 1),
     )
-    if min(sides) < 0.50:
+    # A dash pattern can straddle the 0.50 straight-side threshold by
+    # luck of its duty cycle. Count outright gap columns in the MIDDLE
+    # of each edge band (corner arcs cluster gaps at the band ends, so
+    # those are excluded): a solid frame leaves none, dashes leave
+    # ~20%+ — route the frame through the dash-bridging branch below.
+    def _mid_gap(fills: np.ndarray) -> float:
+        lo, hi = int(0.15 * len(fills)), int(0.85 * len(fills))
+        mid = fills[lo:hi]
+        return float((mid < thr).mean()) if len(mid) else 0.0
+    gap_frac = max(
+        _mid_gap(mask[:band, :].sum(axis=0)),
+        _mid_gap(mask[-band:, :].sum(axis=0)),
+        _mid_gap(mask[:, :band].sum(axis=1)),
+        _mid_gap(mask[:, -band:].sum(axis=1)),
+    )
+    if min(sides) < 0.50 or gap_frac >= 0.20:
         # Dash gaps read as missing side ink; bridge dash-scale gaps
         # along each axis (directional closes don't fatten the stroke)
         # and retry before falling through. A dashed CARD frame is a
@@ -1513,6 +1703,8 @@ def classify_outline_ring(
             cys, cxs = np.nonzero(closed9[:c, :c])
             if len(cxs):
                 dist = float(np.min(np.hypot(cxs, cys))) + 2.0
+                if dist <= 5.0:
+                    return ("dashed_rect", 0.0)
                 radius = min(0.5, max(0.08, dist / 0.414 / min(h, w)))
             else:
                 radius = 0.08
@@ -1525,11 +1717,16 @@ def classify_outline_ring(
             return ("oval", 0.0)
         return None
     # Estimate the corner radius from the ring's closest approach to the
-    # bbox corner: dist = r * (sqrt(2) - 1) for a rounded corner.
+    # bbox corner: dist = r * (sqrt(2) - 1) for a rounded corner. A
+    # sharp-cornered frame runs its stroke into the corner (dist ≈ 0
+    # before the +2 AA fudge) and lifts as a plain rect — clamping it to
+    # the 0.08 minimum used to round corners the source does not have.
     c = max(3, int(round(min(h, w) * 0.25)))
     ys, xs = np.nonzero(mask[:c, :c])
     if len(xs):
         dist = float(np.min(np.hypot(xs, ys))) + 2.0
+        if dist <= 5.0:
+            return ("rect", 0.0)
         radius = min(0.5, max(0.08, dist / 0.414 / min(h, w)))
     else:
         radius = 0.08

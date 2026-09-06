@@ -73,13 +73,13 @@ Use images for extracted logos, icons, background ornaments, line art, photos, a
 }
 ```
 
-Supported shapes include `rect`, `rounded_rect`, `oval`, `diamond`, `triangle`, `trapezoid`, `trapezoid_down` (short side on the bottom; the builder adds a 180° rotation), `parallelogram`, `pentagon`, `hexagon`, `homeplate` / `chevron` (right-pointing process banners), and the block arrows `right_arrow` / `left_arrow` / `up_arrow` / `down_arrow`. A `dashed_` prefix (`dashed_rect`, `dashed_round_rect`) lifts dashed-border frames and restores the dash styling; these kinds may also carry a `"dash"` styling key.
+Supported shapes include `rect`, `rounded_rect`, `oval`, `diamond`, `triangle`, `trapezoid`, `trapezoid_down` (short side on the bottom; the builder adds a 180° rotation), `parallelogram`, `pentagon`, `hexagon`, `homeplate` / `chevron` (right-pointing process banners), the point-up stars `star_4` / `star_5`, and the block arrows `right_arrow` / `left_arrow` / `up_arrow` / `down_arrow`. A `dashed_` prefix (`dashed_rect`, `dashed_round_rect`) lifts dashed-border frames and restores the dash styling; these kinds may also carry a `"dash"` styling key.
 
 A shape may carry an optional `"rotation"` (degrees, clockwise around the shape centre) for skewed geometry — solid rectangles lifted at a skew angle emit it automatically. Block arrows carry `"adjustments": [shaft, head_length]` measured off the silhouette so the autoshape matches the source raster.
 
 Simple solid geometry (circles, rounded rects, rects — card frames, circular badges, colour chips, capsules) is emitted as native shapes; photos, gradients, and complex icons stay as image crops. Card-frame shapes render before images; solid chip/badge shapes render after images (their pixels were inpainted out of the parent card) and before text.
 
-The page pipeline lifts geometry automatically: solid upright polygons (triangles, diamonds, short-top trapezoids, parallelograms, regular pentagons/hexagons, right-pointing homeplates/chevrons, block arrows) and thin ring/annulus outlines classify to native shapes (`scripts/page/layout/outline.py::classify_filled_shape`); clearly skewed solid rectangles lift via the min-area rect with a `rotation` (`outline.py::_rotated_rect_candidate`); anything ambiguous stays a pixel-perfect PNG.
+The page pipeline lifts geometry automatically: solid upright polygons (triangles, diamonds, short-top trapezoids, parallelograms, regular pentagons/hexagons, right-pointing homeplates/chevrons, point-up 4/5-point stars, block arrows) and thin ring/annulus outlines classify to native shapes (`scripts/page/layout/outline.py::classify_filled_shape`); clearly skewed solid rectangles lift via the min-area rect with a `rotation` (`outline.py::_rotated_rect_candidate`); anything ambiguous stays a pixel-perfect PNG. Solid lifts measure their border stroke and scale `line_width` off it (`_border_stroke_measure`) instead of a fixed default.
 
 ### Line
 
@@ -96,7 +96,7 @@ The page pipeline lifts geometry automatically: solid upright polygons (triangle
 
 Use native lines for separators and rules when they are simple. Use extracted images for complex gradient/ornamental lines.
 
-Straight connector-role strokes detected in the source (solid, dashed, dotted, diagonal, single or double arrowhead) are lifted to native `line` elements automatically (`classify_connector_line`); an optional `"arrow": "start"|"end"|"both"` renders a triangle arrowhead. L-shaped elbow connectors lift to a 3-point `"points"` polyline (`classify_elbow_line`), rendered as one native freeform line. Ornamental strokes and multi-bend polylines stay PNG crops.
+Straight connector-role strokes detected in the source (solid, dashed, dotted, diagonal, single or double arrowhead) are lifted to native `line` elements automatically (`classify_connector_line`); an optional `"arrow": "start"|"end"|"both"` renders a triangle arrowhead, and dashed strokes carry `"dash"` — the two keys combine, so a dashed arrow lifts with both styles. L-shaped elbow connectors lift to a 3-point `"points"` polyline (`classify_elbow_line`), rendered as one native freeform line. Ornamental strokes and multi-bend polylines stay PNG crops.
 
 ## Ordering
 

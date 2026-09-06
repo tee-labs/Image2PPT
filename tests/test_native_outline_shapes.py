@@ -62,7 +62,9 @@ class NativeOutlineShapeTests(unittest.TestCase):
             builder.write()
             self.assertEqual(len(builder.shape_elements), 1)
             shape = builder.shape_elements[0]
-            self.assertEqual(shape["shape"], "round_rect")
+            # Sharp-cornered frame lifts as a plain rect (phase 3: no
+            # artificial 0.08 corner rounding on sharp source frames).
+            self.assertEqual(shape["shape"], "rect")
             self.assertEqual(shape["box"], [100, 120, 600, 240])
             self.assertTrue(shape["line"])
 
