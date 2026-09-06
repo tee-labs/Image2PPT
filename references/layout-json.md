@@ -73,11 +73,11 @@ Use images for extracted logos, icons, background ornaments, line art, photos, a
 }
 ```
 
-Supported shapes include `rect`, `rounded_rect`, `oval`, `diamond`, `triangle`, and `trapezoid`.
+Supported shapes include `rect`, `rounded_rect`, `oval`, `diamond`, `triangle`, `trapezoid`, `parallelogram`, `pentagon`, and `hexagon`. A shape may carry an optional `"rotation"` (degrees, clockwise around the shape centre) for skewed geometry — solid rectangles lifted at a skew angle emit it automatically.
 
-Simple solid geometry (circles, rounded rects, rects — card frames, circular badges, colour chips) is emitted as native shapes; photos, gradients, and complex icons stay as image crops. Card-frame shapes render before images; solid chip/badge shapes render after images (their pixels were inpainted out of the parent card) and before text.
+Simple solid geometry (circles, rounded rects, rects — card frames, circular badges, colour chips, capsules) is emitted as native shapes; photos, gradients, and complex icons stay as image crops. Card-frame shapes render before images; solid chip/badge shapes render after images (their pixels were inpainted out of the parent card) and before text.
 
-The page pipeline lifts geometry automatically: solid upright polygons (triangles, diamonds, short-top trapezoids) and thin ring/annulus outlines classify to native shapes (`scripts/page/layout/outline.py::classify_filled_shape`); anything ambiguous stays a pixel-perfect PNG.
+The page pipeline lifts geometry automatically: solid upright polygons (triangles, diamonds, short-top trapezoids, parallelograms, regular pentagons/hexagons) and thin ring/annulus outlines classify to native shapes (`scripts/page/layout/outline.py::classify_filled_shape`); clearly skewed solid rectangles lift via the min-area rect with a `rotation` (`outline.py::_rotated_rect_candidate`); anything ambiguous stays a pixel-perfect PNG.
 
 ### Line
 

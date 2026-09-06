@@ -372,6 +372,39 @@ def _quad_ring_candidate(crop_bgr: np.ndarray, fg: np.ndarray,
             float(min(max(thickness, 1.0), 40.0)))
 
 
+def _regular_polygon_slots(pts: np.ndarray, n: int,
+                           w: int, h: int) -> bool:
+    """Orientation gate for regular pentagon / hexagon lifts.
+
+    MSO draws REGULAR_PENTAGON point-up (one apex top-centre, a
+    horizontal base on the bbox bottom) and HEXAGON flat-top with
+    points left+right. Only silhouettes matching those orientations
+    lift — a rotated polygon would render at the wrong angle.
+    Side-length uniformity is checked by the caller's approx stability
+    plus this helper's near-equal-side gate.
+    """
+    sides = sorted(
+        float(math.hypot(*(pts[(i + 1) % n] - pts[i]))) for i in range(n))
+    if sides[-1] > 1.30 * max(1.0, sides[0]):
+        return False
+    if n == 5:
+        apex = [p for p in pts
+                if p[1] <= 0.16 * (h - 1)
+                and abs(p[0] - (w - 1) / 2.0) <= 0.22 * w]
+        if len(apex) != 1:
+            return False
+        base = [p for p in pts if p[1] >= 0.90 * (h - 1)]
+        if len(base) != 2 or abs(base[0][1] - base[1][1]) > 0.08 * h:
+            return False
+        return abs(base[0][0] - base[1][0]) >= 0.45 * w
+    top = [p for p in pts if p[1] <= 0.12 * (h - 1)]
+    bot = [p for p in pts if p[1] >= 0.88 * (h - 1)]
+    left = [p for p in pts if p[0] <= 0.12 * (w - 1)]
+    right = [p for p in pts if p[0] >= 0.88 * (w - 1)]
+    return (len(top) == 2 and len(bot) == 2
+            and len(left) == 1 and len(right) == 1)
+
+
 def _polygon_candidate(filled: np.ndarray) -> str | None:
     """Convex-polygon lift for silhouettes the rect/oval gates rejected.
 
@@ -404,6 +437,62 @@ def _polygon_candidate(filled: np.ndarray) -> str | None:
     if len({len(a) for a in approxes}) != 1:
         return None  # vertex count unstable across epsilons -> blob
     approx = approxes[0]
+    # Sharpness: a rounded rect's arc contour collapses to a slanted
+    # quad at these epsilons, and its arc perimeter far exceeds the
+    # chord polygon's. A true polygon keeps the two within a few
+    # percent.
+    if cv2.arcLength(approx, True) < 0.92 * peri:
+        return None
+    # Vertex sharpness, snap-first: approxPolyDP may slide a vertex
+    # along an edge or cut a convex corner by up to eps, which corrupts
+    # any local angle measurement. Convex silhouettes let us recover
+    # the true corner: snap each vertex to the contour point extreme
+    # along its outward bisector (the support point), then measure the
+    # contour turn there. A true polygon vertex turns hard (>= 60° for
+    # hexagon..square); a collapsed corner arc of radius r turns only
+    # ~90°·(2·win)/(pi·r/2) — a 5px window on r >= 20 stays under 30°.
+    pts_seq = cnt.reshape(-1, 2).astype(np.float64)
+    m = len(pts_seq)
+    centroid = pts_seq.mean(axis=0)
+    ap = approx.reshape(-1, 2).astype(np.float64)
+    win = max(3, int(round(0.05 * min(h, w))))
+    snapped = []
+    for i, v in enumerate(ap):
+        v_prev, v_next = ap[(i - 1) % len(ap)], ap[(i + 1) % len(ap)]
+        t1 = v_prev - v
+        t2 = v_next - v
+        n1v = float(np.hypot(*t1))
+        n2v = float(np.hypot(*t2))
+        if n1v < 1.0 or n2v < 1.0:
+            snapped.append(None)
+            continue
+        # Both vectors point from v along the polygon edges: their sum
+        # is the INTERIOR bisector for a convex corner, so negate for
+        # outward; the centroid dot-check guards orientation slips.
+        bis = -(t1 / n1v + t2 / n2v)
+        nb = float(np.hypot(*bis))
+        if nb < 1e-6:
+            snapped.append(None)
+            continue
+        bis /= nb
+        if np.dot(bis, v - centroid) < 0:
+            bis = -bis
+        snapped.append(int(np.argmax(pts_seq @ bis)))
+    for v, idx in zip(ap, snapped):
+        if idx is None:
+            continue
+        a = pts_seq[(idx - win) % m]
+        b = pts_seq[(idx + win) % m]
+        vv = pts_seq[idx]
+        d1, d2 = vv - a, b - vv
+        n1 = float(math.hypot(d1[0], d1[1]))
+        n2 = float(math.hypot(d2[0], d2[1]))
+        if n1 < 1.0 or n2 < 1.0:
+            continue
+        cosang = float(np.clip(np.dot(d1, d2) / (n1 * n2), -1.0, 1.0))
+        if math.degrees(math.acos(cosang)) < 40.0:
+            return None  # collapsed arc, not a sharp polygon vertex
+    approx = approxes[0]
     if not cv2.isContourConvex(approx):
         return None
     pts = approx.reshape(-1, 2).astype(np.float32)
@@ -422,6 +511,8 @@ def _polygon_candidate(filled: np.ndarray) -> str | None:
                      or min(e0[1], e1[1]) <= 0.06 * (h - 1)):
             return "triangle"
         return None
+    if n in (5, 6) and _regular_polygon_slots(pts, n, w, h):
+        return "pentagon" if n == 5 else "hexagon"
     if n != 4:
         return None
     horiz = 0
@@ -441,6 +532,19 @@ def _polygon_candidate(filled: np.ndarray) -> str | None:
                 and abs(top_w - bot_w) >= 0.25 * max(top_w, bot_w) \
                 and top_w < bot_w:
             return "trapezoid"
+        # Equal-width horizontal edges that are horizontally offset:
+        # a parallelogram. A rect's top/bottom mids align (slant ~ 0)
+        # and fall through to the upright rect coverage band instead.
+        # MSO's parallelogram has one fixed slant adjustment, so gate
+        # to moderate offsets where the default autoshape stays
+        # visually faithful.
+        if min(top_w, bot_w) >= 0.30 * w \
+                and abs(top_w - bot_w) <= 0.20 * max(top_w, bot_w):
+            slant = abs(
+                (top_pair[0][0] + top_pair[1][0]) / 2.0
+                - (bot_pair[0][0] + bot_pair[1][0]) / 2.0)
+            if 0.15 * min(w, h) <= slant <= 0.55 * w:
+                return "parallelogram"
         return None
     if horiz >= 1:
         return None  # mixed quad (kite/house shapes): keep PNG
@@ -462,6 +566,295 @@ def _polygon_candidate(filled: np.ndarray) -> str | None:
     if all(slots.values()):
         return "diamond"
     return None
+
+
+def _ellipse_band_fit(mask: np.ndarray):
+    """Fit an ellipse to silhouette ink; report how tightly the ink hugs
+    the fitted perimeter.
+
+    Returns ``None`` when the ink is too sparse, the band is not thin
+    (blobs, concentric rings, frilly glyphs), or the ring is open (C
+    shapes leave empty angular sectors). Otherwise returns
+    ``(rho_p05, rho_p50, rho_p95, thickness_px)`` where ``rho`` is the
+    normalised ellipse radius (1.0 == exactly on the perimeter).
+    """
+    pts = cv2.findNonZero(mask.astype(np.uint8))
+    if pts is None or len(pts) < 40:
+        return None
+    (ecx, ecy), (ea, eb), eang = cv2.fitEllipse(pts)
+    a, b = max(ea, eb) / 2.0, min(ea, eb) / 2.0
+    if a < 12.0 or b < 6.0:
+        return None
+    theta = math.radians(eang)
+    xs = pts[:, 0, 0].astype(np.float64) - ecx
+    ys = pts[:, 0, 1].astype(np.float64) - ecy
+    u = xs * math.cos(theta) + ys * math.sin(theta)
+    v = -xs * math.sin(theta) + ys * math.cos(theta)
+    # ea/eb are FULL axis lengths, so a perimeter point measures rho=1.
+    rho = 2.0 * np.sqrt((u / ea) ** 2 + (v / eb) ** 2)
+    per = math.pi * (3.0 * (a + b)
+                     - math.sqrt((3.0 * a + b) * (a + 3.0 * b)))
+    thickness = float(mask.sum()) / max(1.0, per)
+    # Thin closed band only: thick ink (solid diamonds, stars, blobs)
+    # blows up the thickness-scaled tolerance and would classify as an
+    # "oval ring" it is not. The absolute 0.45 cap catches multi-ring
+    # silhouettes (concentric circles): two strokes double the
+    # thickness estimate, but their rho spread stays wide.
+    if thickness > 0.25 * b:
+        return None
+    tol = min(max(0.14, 3.0 * thickness / b), 0.45)
+    p05, p50, p95 = np.percentile(rho, [5, 50, 95])
+    if (p95 - p05) > tol:
+        return None  # band too thick / scattered ink
+    if abs(p50 - 1.0) > 0.75 * tol:
+        return None  # ink not centred on the fitted perimeter
+    ang_pt = np.arctan2(v, u)
+    bins = np.clip(((ang_pt + np.pi) / (2 * np.pi) * 12).astype(int), 0, 11)
+    if len(np.unique(bins)) < 10:
+        return None  # open arc / C shape
+    return p05, p50, p95, thickness
+
+
+def _ellipse_ring_candidate(crop_bgr: np.ndarray, fg: np.ndarray,
+                            bg: np.ndarray):
+    """Classify a sparse wide-ellipse outline (decorative title halo).
+
+    ``_ring_candidate`` only accepts near-square annuli and
+    ``_quad_ring_candidate`` requires straight sides, so a wide thin
+    ellipse ring fell through to the PNG path. Requires one dominant
+    component hugging one fitted ellipse and a single uniform stroke
+    colour. Returns ``("oval", None, line_hex, 0.0, thickness_px)`` or
+    None.
+    """
+    h, w = fg.shape[:2]
+    if min(h, w) < 24:
+        return None
+    fit = _ellipse_band_fit(fg)
+    if fit is None:
+        return None
+    fg_u8 = fg.astype(np.uint8)
+    n_labels, labels = cv2.connectedComponents(fg_u8, 8)
+    if n_labels - 1 == 0:
+        return None
+    counts = np.bincount(labels.ravel())[1:]
+    if int(counts.max()) < 0.85 * int(fg.sum()):
+        return None  # scattered fragments, not one ring
+    # Interior hole (4-connectivity, same as _ring_candidate): a closed
+    # ring traps a background component; hairline 1-px strokes leak on
+    # diagonal steps and stay on the PNG path like the circle rings do.
+    closed = cv2.morphologyEx(fg_u8, cv2.MORPH_CLOSE,
+                              np.ones((3, 3), np.uint8))
+    inv = (~closed.astype(bool)).astype(np.uint8)
+    n_inv, inv_labels = cv2.connectedComponents(inv, 4)
+    border_labels = set(inv_labels[0, :].tolist()) \
+        | set(inv_labels[-1, :].tolist()) \
+        | set(inv_labels[:, 0].tolist()) \
+        | set(inv_labels[:, -1].tolist())
+    hole = np.isin(
+        inv_labels, [i for i in range(1, n_inv) if i not in border_labels])
+    if int(hole.sum()) < max(80, int(0.15 * int(fg.sum()))):
+        return None  # open arc / hairline stroke
+    px_all = crop_bgr[fg].reshape(-1, 3).astype(np.int16)
+    dist_bg = np.abs(px_all - bg[None, :]).max(axis=1)
+    core = px_all[dist_bg >= np.percentile(dist_bg, 60)]
+    if len(core) < 12:
+        return None
+    line_bgr = np.median(core, axis=0).astype(np.int16)
+    spread = np.abs(core - line_bgr[None, :]).max(axis=1)
+    if float((spread <= 36).mean()) < 0.75:
+        return None
+    _p05, _p50, _p95, thickness = fit
+    return ("oval", None, _bgr_to_hex(line_bgr), 0.0,
+            float(max(1.0, thickness)))
+
+
+def _outline_hugs_ellipse(mask: np.ndarray) -> bool:
+    """True when outline ink forms one thin closed band around a fitted
+    ellipse (a wide/skewed oval ring that the circle-hug test misses)."""
+    return _ellipse_band_fit(mask) is not None
+
+
+def _vet_fill_colors(crop_bgr: np.ndarray, fg: np.ndarray,
+                     filled: np.ndarray, bg: np.ndarray):
+    """Shared fill/line colour vetting for solid-primitive lifts.
+
+    Accepts only one uniform ink colour with a clean interior: gradient
+    or multi-colour content, glyphs/photos baked inside the shape, and
+    ghost-pale fills without a crisp border all return None so the crop
+    stays on the pixel-perfect PNG path. Returns
+    ``(fill_hex, line_hex)``.
+    """
+    pixels = crop_bgr[fg].reshape(-1, 3)
+    if len(pixels) < 24:
+        return None
+    fill_bgr = _dominant_color(crop_bgr, fg)
+    spread = np.abs(pixels.astype(np.int16) - fill_bgr[None, :]).max(axis=1)
+    if float((spread <= 30).mean()) < 0.80:
+        return None  # gradient / photo / multi-colour content
+    # Interior must be uniform too: a glyph or photo baked inside the
+    # shape would be lost by a native-shape emit, so keep the PNG. The
+    # erosion must clear the shape's own border stroke (2-3 px + anti-
+    # alias), not just 2 iterations — border remnants read as interior
+    # spread and rejected pale bordered cards at 0.96 vs the 0.97 gate.
+    # borderValue=0 matters: cv2's erode default pads with +inf, which
+    # lets the border stroke survive on crop-edge rows of tight bboxes
+    # and pollute the core.
+    h, w = filled.shape[:2]
+    core_depth = max(3, min(h, w) // 24)
+    core = cv2.erode(filled.astype(np.uint8) * 255,
+                     np.ones((3, 3), np.uint8),
+                     iterations=core_depth,
+                     borderType=cv2.BORDER_CONSTANT,
+                     borderValue=0) > 0
+    if int(core.sum()) >= 24:
+        core_pixels = crop_bgr[core].reshape(-1, 3)
+        core_spread = np.abs(
+            core_pixels.astype(np.int16) - fill_bgr[None, :]).max(axis=1)
+        if float((core_spread <= 30).mean()) < 0.97:
+            return None
+    fg_u8 = fg.astype(np.uint8) * 255
+    boundary = (fg_u8 > 0) & (cv2.erode(
+        fg_u8, np.ones((3, 3), np.uint8), iterations=2) == 0)
+    if int(boundary.sum()) >= 24:
+        line_bgr = np.median(crop_bgr[boundary], axis=0).astype(np.int16)
+    else:
+        line_bgr = fill_bgr
+    fill_hex = _bgr_to_hex(fill_bgr)
+    line_hex = _bgr_to_hex(line_bgr)
+    # Ghost-pale fill gate (after colour sampling): faint tint blocks
+    # stay PNG unless a crisp solid border exists — pale cards with a
+    # visible outline are the classic deck card and belong in the
+    # native-shape path. Border evidence comes from either the
+    # silhouette boundary (padded crop: the border ring around the crop
+    # sampled white so the stroke lands on the boundary) or the
+    # segmentation bg itself (tight crop: the border ring IS the card's
+    # stroke). Dashed placeholders and borderless tint panels have
+    # neither → PNG.
+    gray = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2GRAY)
+    hsv = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2HSV)
+    gray_med = float(np.median(gray[fg]))
+    sat_med = float(np.median(hsv[:, :, 1][fg]))
+    if gray_med >= 235 and sat_med <= 25:
+        def _border_like(colour: np.ndarray) -> bool:
+            diff = float(np.max(
+                np.abs(colour.astype(np.int16) - fill_bgr.astype(np.int16))))
+            lum = float(0.114 * colour[0]
+                        + 0.587 * colour[1] + 0.299 * colour[2])
+            return diff > 30 and lum < 235
+        if _border_like(bg) and not _border_like(line_bgr):
+            line_bgr = bg.copy()
+            line_hex = _bgr_to_hex(line_bgr)
+        if not _border_like(line_bgr):
+            return None
+    return fill_hex, line_hex
+
+
+def _rotated_rect_candidate(crop_bgr: np.ndarray):
+    """Lift a solid rectangle drawn at a skew angle to a native rect.
+
+    Upright primitives land in ``classify_filled_shape``; a rotated one
+    (diagonal banner, tilted card, arrow tick) fills its bbox corners
+    only partially and fails every upright coverage band, so it used to
+    stay a flattened PNG. Returns
+    ``(x, y, w, h, rotation_deg, fill_hex, line_hex)`` in crop
+    coordinates — the box is the min-area rect because PPT rotates
+    around the shape centre — or None. Tight gates: clearly skewed
+    (|angle| >= 12°), near-perfect rectangular silhouette, one uniform
+    fill colour.
+    """
+    h, w = crop_bgr.shape[:2]
+    if min(h, w) < 24:
+        return None
+    border = np.concatenate([
+        crop_bgr[:2, :].reshape(-1, 3),
+        crop_bgr[-2:, :].reshape(-1, 3),
+        crop_bgr[:, :2].reshape(-1, 3),
+        crop_bgr[:, -2:].reshape(-1, 3),
+    ])
+    bg = np.median(border, axis=0).astype(np.int16)
+    fg = np.abs(crop_bgr.astype(np.int16) - bg[None, None]).max(axis=2) > 14
+    if float(fg.mean()) < 0.30:
+        gray = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2GRAY)
+        hsv = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2HSV)
+        diff_white = np.abs(crop_bgr.astype(np.int16) - 255).max(axis=2)
+        fg = (((gray < 250) & (diff_white > 6))
+              | ((hsv[:, :, 1] > 10) & (diff_white > 4)))
+        if float(fg.mean()) < 0.30:
+            return None
+    # Fill interior holes (erased text inside the shape) so both the
+    # contour and the IoU metric describe the solid silhouette.
+    inv = (~fg).astype(np.uint8)
+    n_labels, labels = cv2.connectedComponents(inv, 4)
+    border_labels = set(labels[0, :].tolist()) | set(labels[-1, :].tolist()) \
+        | set(labels[:, 0].tolist()) | set(labels[:, -1].tolist())
+    hole_mask = np.isin(
+        labels, [i for i in range(1, n_labels) if i not in border_labels])
+    filled = fg | hole_mask
+    cnts, _ = cv2.findContours(
+        filled.astype(np.uint8) * 255, cv2.RETR_EXTERNAL,
+        cv2.CHAIN_APPROX_SIMPLE)
+    if not cnts:
+        return None
+    cnt = max(cnts, key=cv2.contourArea)
+    if cv2.contourArea(cnt) < 0.92 * float(filled.sum()):
+        return None  # frilly silhouette (icon/glyph), not one solid
+    (rcx, rcy), (r1, r2), _ang = cv2.minAreaRect(cnt)
+    s_long, s_short = max(r1, r2), min(r1, r2)
+    if s_short < 14:
+        return None
+    box = cv2.boxPoints(((rcx, rcy), (r1, r2), _ang))
+    poly = np.zeros(filled.shape, np.uint8)
+    cv2.fillPoly(poly, [np.round(box).astype(np.int32)], 1)
+    # PPT rotation is clockwise-positive around the shape centre; image
+    # coords are y-down so atan2(dy, dx) of the long edge is already
+    # clockwise-positive. Fold into (-90, 90], then express as
+    # width=long-side rotation in [-45, 45).
+    edges = sorted(
+        ((float(np.hypot(box[(i + 1) % 4][0] - box[i][0],
+                         box[(i + 1) % 4][1] - box[i][1])), i)
+         for i in range(4)), reverse=True)
+    p, q = box[edges[0][1]], box[(edges[0][1] + 1) % 4]
+    angle = math.degrees(
+        math.atan2(float(q[1] - p[1]), float(q[0] - p[0])))
+    if angle <= -90.0:
+        angle += 180.0
+    elif angle > 90.0:
+        angle -= 180.0
+    if abs(angle) > 45.0:
+        # Long edge runs near-vertical: make the short edge the PPT
+        # width and fold the rotation by 90°.
+        angle -= math.copysign(90.0, angle)
+        s_long, s_short = s_short, s_long
+    inter = int((poly.astype(bool) & filled).sum())
+    union = int((poly.astype(bool) | filled).sum())
+    # A true rasterized rotated rect measures ~0.97; a filled circle's
+    # tilted min-area rect still reaches ~0.95, so IoU alone cannot
+    # separate them. A rect has four sharp corners: warp the mask into
+    # the rect frame and require filled corners (a circle inscribed in
+    # its tilted square leaves every corner empty).
+    if union == 0 or inter / float(union) < 0.93:
+        return None  # ellipse / rounded blob — not rect enough
+    th = math.radians(angle)
+    ct, st = math.cos(th), math.sin(th)
+    cw, chh = max(2, int(round(s_long))), max(2, int(round(s_short)))
+    M = np.array([
+        [ct, st, cw / 2.0 - ct * rcx - st * rcy],
+        [-st, ct, chh / 2.0 + st * rcx - ct * rcy],
+    ], np.float64)
+    warped = cv2.warpAffine(
+        filled.astype(np.uint8) * 255, M, (cw, chh),
+        flags=cv2.INTER_NEAREST, borderValue=0) > 0
+    if _corner_fill_fraction(warped) < 0.45:
+        return None  # circle / oval — corners never fill
+    if abs(angle) < 12.0:
+        return None  # near-axis: the upright bands classify it better
+    colors = _vet_fill_colors(crop_bgr, fg, filled, bg)
+    if colors is None:
+        return None
+    fill_hex, line_hex = colors
+    return (int(round(rcx - s_long / 2.0)), int(round(rcy - s_short / 2.0)),
+            max(1, int(round(s_long))), max(1, int(round(s_short))),
+            round(float(angle), 1), fill_hex, line_hex)
 
 
 def classify_connector_line(crop_bgr: np.ndarray):
@@ -609,7 +1002,10 @@ def classify_filled_shape(crop_bgr: np.ndarray):
             ring = _ring_candidate(crop_bgr, fg, bg)
             if ring is not None:
                 return ring
-            return _quad_ring_candidate(crop_bgr, fg, bg)
+            quad = _quad_ring_candidate(crop_bgr, fg, bg)
+            if quad is not None:
+                return quad
+            return _ellipse_ring_candidate(crop_bgr, fg, bg)
     elif float(fg.mean()) > 0.60:
         # Hollow frame touching the crop edge: the border ring sampled
         # the frame's stroke, inverting the mask (interior reads as
@@ -626,6 +1022,9 @@ def classify_filled_shape(crop_bgr: np.ndarray):
         quad = _quad_ring_candidate(crop_bgr, fg, bg)
         if quad is not None:
             return quad
+        ellipse = _ellipse_ring_candidate(crop_bgr, fg, bg)
+        if ellipse is not None:
+            return ellipse
     # Fill interior holes (erased text leaves gaps inside badges) so the
     # coverage metrics describe the silhouette, not the gaps. A hole is
     # a background component NOT touching the crop border.
@@ -636,70 +1035,29 @@ def classify_filled_shape(crop_bgr: np.ndarray):
     hole_mask = np.isin(
         labels, [i for i in range(1, n_labels) if i not in border_labels])
     filled = fg | hole_mask
+    # Padding-invariant metrics: the builder hands the classifier a
+    # background-padded crop (icon bbox loosening), so coverage /
+    # corner / radius must be measured against the silhouette's own
+    # bbox, not the padded canvas. For boundary-touching shapes the
+    # tight bbox equals the crop and nothing changes.
+    ys_t, xs_t = np.nonzero(filled)
+    if len(xs_t) == 0:
+        return None
+    tx1, tx2 = int(xs_t.min()), int(xs_t.max()) + 1
+    ty1, ty2 = int(ys_t.min()), int(ys_t.max()) + 1
+    filled = filled[ty1:ty2, tx1:tx2]
+    tw, th_ = tx2 - tx1, ty2 - ty1
     cov = float(filled.mean())
     corner = _corner_fill_fraction(filled)
 
-    pixels = crop_bgr[fg].reshape(-1, 3)
-    if len(pixels) < 24:
+    colors = _vet_fill_colors(crop_bgr[ty1:ty2, tx1:tx2],
+                              fg[ty1:ty2, tx1:tx2], filled, bg)
+    if colors is None:
         return None
-    fill_bgr = _dominant_color(crop_bgr, fg)
-    spread = np.abs(pixels.astype(np.int16) - fill_bgr[None, :]).max(axis=1)
-    if float((spread <= 30).mean()) < 0.80:
-        return None  # gradient / photo / multi-colour content
-    # Interior must be uniform too: a glyph or photo baked inside the
-    # shape would be lost by a native-shape emit, so keep the PNG. The
-    # erosion must clear the shape's own border stroke (2-3 px + anti-
-    # alias), not just 2 iterations — border remnants read as interior
-    # spread and rejected pale bordered cards at 0.96 vs the 0.97 gate.
-    # borderValue=0 matters: cv2's erode default pads with +inf, which
-    # lets the border stroke survive on crop-edge rows of tight bboxes
-    # and pollute the core.
-    core_depth = max(3, min(h, w) // 24)
-    core = cv2.erode(filled.astype(np.uint8) * 255,
-                     np.ones((3, 3), np.uint8),
-                     iterations=core_depth,
-                     borderType=cv2.BORDER_CONSTANT,
-                     borderValue=0) > 0
-    if int(core.sum()) >= 24:
-        core_pixels = crop_bgr[core].reshape(-1, 3)
-        core_spread = np.abs(
-            core_pixels.astype(np.int16) - fill_bgr[None, :]).max(axis=1)
-        if float((core_spread <= 30).mean()) < 0.97:
-            return None
-    fg_u8 = fg.astype(np.uint8) * 255
-    boundary = (fg_u8 > 0) & (cv2.erode(
-        fg_u8, np.ones((3, 3), np.uint8), iterations=2) == 0)
-    if int(boundary.sum()) >= 24:
-        line_bgr = np.median(crop_bgr[boundary], axis=0).astype(np.int16)
-    else:
-        line_bgr = fill_bgr
-    fill_hex = _bgr_to_hex(fill_bgr)
-    line_hex = _bgr_to_hex(line_bgr)
-    # Ghost-pale fill gate (after colour sampling): faint tint blocks
-    # stay PNG unless a crisp solid border exists — pale cards with a
-    # visible outline are the classic deck card and belong in the
-    # native-shape path. Border evidence comes from either the
-    # silhouette boundary (padded crop: the border ring around the crop
-    # sampled white so the stroke lands on the boundary) or the
-    # segmentation bg itself (tight crop: the border ring IS the card's
-    # stroke). Dashed placeholders and borderless tint panels have
-    # neither → PNG.
-    gray_med = float(np.median(gray[fg]))
-    sat_med = float(np.median(hsv[:, :, 1][fg]))
-    if gray_med >= 235 and sat_med <= 25:
-        def _border_like(colour: np.ndarray) -> bool:
-            diff = float(np.max(
-                np.abs(colour.astype(np.int16) - fill_bgr.astype(np.int16))))
-            lum = float(0.114 * colour[0]
-                        + 0.587 * colour[1] + 0.299 * colour[2])
-            return diff > 30 and lum < 235
-        if _border_like(bg) and not _border_like(line_bgr):
-            line_bgr = bg.copy()
-            line_hex = _bgr_to_hex(line_bgr)
-        if not _border_like(line_bgr):
-            return None
+    fill_hex, line_hex = colors
     # Convex polygons the rect/oval gates can't express (isoceles
-    # triangles, diamonds, trapezoids — cov lands between the bands).
+    # triangles, diamonds, trapezoids, parallelograms, regular
+    # pentagons/hexagons — cov lands between the bands).
     # Runs after the colour gates so fill/line are already vetted.
     poly = _polygon_candidate(filled)
     if poly is not None:
@@ -711,12 +1069,25 @@ def classify_filled_shape(crop_bgr: np.ndarray):
         return ("rect", fill_hex, line_hex, 0.0, 0.0)
     if cov >= 0.84 and corner <= 0.45:
         # Corner radius from the area lost to rounding:
-        # 1 - cov = (4 - pi) * (r / side)^2 for a near-square shape.
-        radius = math.sqrt(max(0.0, 1.0 - cov) / (4.0 - math.pi))
+        # 1 - cov = (4 - pi) * r^2 / (w * h); the MSO adjustment is
+        # r / min(w, h). Normalising by sqrt(w * h) — the old formula —
+        # underestimated wide/tall rounded rects by sqrt(w / h): a 3:1
+        # capsule measured 0.29 instead of a true 0.5.
+        radius = math.sqrt(
+            max(0.0, 1.0 - cov) * (tw * th_) / (4.0 - math.pi))
+        radius = radius / max(1.0, min(th_, tw))
         radius = min(0.5, max(0.08, radius))
         return ("round_rect", fill_hex, line_hex, round(radius, 3), 0.0)
     if 0.60 <= cov <= 0.835 and corner <= 0.03:
-        return ("oval", fill_hex, line_hex, 0.0, 0.0)
+        # The ellipse signature (cov ≈ pi/4, empty corners) is shared
+        # by rotated polygons with a similar footprint; require the
+        # boundary to hug one fitted ellipse before lifting.
+        boundary_ring = filled & ~(
+            cv2.erode(filled.astype(np.uint8) * 255,
+                      np.ones((3, 3), np.uint8),
+                      iterations=2) > 0)
+        if _ellipse_band_fit(boundary_ring) is not None:
+            return ("oval", fill_hex, line_hex, 0.0, 0.0)
     return None
 
 
@@ -725,14 +1096,14 @@ def classify_outline_ring(
         bbox: tuple[int, int, int, int],
         mask_path: str | None = None,
 ) -> tuple[str, float] | None:
-    """Classify a near-square card-outline candidate.
+    """Classify a card-outline candidate (any aspect ratio).
 
-    ``_outline_should_be_native_shape`` deliberately excludes near-square
-    outlines: they are frequently circles, and a rounded rectangle drawn
-    over a circular ring shows an extra visible box. This classifier
-    recovers the safe half of those cases:
+    Near-square outlines are frequently circles, and a rounded rectangle
+    drawn over a circular ring shows an extra visible box. This
+    classifier decides the safe lift per silhouette:
       * ring pixels hug one enclosing circle -> ("oval", 0.0)
       * ring runs along all four straight sides -> ("round_rect", radius)
+      * ring hugs one fitted ellipse (wide oval outline) -> ("oval", 0.0)
     Anything else (concentric rings, polygons, content-polluted masks)
     returns None so the pixel-perfect PNG path is kept.
     """
@@ -773,12 +1144,19 @@ def classify_outline_ring(
     if (p95 - p05) / max(1.0, p50) <= 0.16:
         return ("oval", 0.0)
     band = max(2, int(round(min(h, w) * 0.03)))
+    # Stroke-aware per-column/row threshold: a min-side-scaled band is
+    # much taller than a thin stroke on wide outlines (7 px band vs a
+    # 3 px stroke measured 3/7 = 0.43 and failed the old half-filled
+    # test). Compare the ink depth per column against the estimated
+    # stroke width instead.
+    stroke = float(mask.sum()) / max(1.0, 2.0 * (w + h) - 4.0)
+    thr = max(1.0, 0.5 * stroke)
     def _straight(zone: np.ndarray, axis: int) -> float:
-        # Fraction of columns (rows) whose band is at least half filled.
-        # Circle tangents fill the band only near the centre column; a
-        # straight card edge fills it across the whole run.
-        fills = zone.mean(axis=axis)
-        return float((fills >= 0.5).mean())
+        # Fraction of columns (rows) carrying at least a stroke's depth
+        # of ink. Circle tangents cross the band only near the centre
+        # column; a straight card edge fills it across the whole run.
+        fills = zone.sum(axis=axis)
+        return float((fills >= thr).mean())
     sides = (
         _straight(mask[:band, :], 0),
         _straight(mask[-band:, :], 0),
@@ -786,6 +1164,12 @@ def classify_outline_ring(
         _straight(mask[:, -band:], 1),
     )
     if min(sides) < 0.50:
+        # Not a straight-sided frame. A thin closed band around one
+        # fitted ellipse is still a safe oval lift (wide decorative
+        # ellipse outlines hug no circle, so the circle test above
+        # misses them).
+        if _outline_hugs_ellipse(mask):
+            return ("oval", 0.0)
         return None
     # Estimate the corner radius from the ring's closest approach to the
     # bbox corner: dist = r * (sqrt(2) - 1) for a rounded corner.
