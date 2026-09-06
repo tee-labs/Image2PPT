@@ -14,8 +14,49 @@ to suppress candidates that overlap text glyphs.
 """
 from __future__ import annotations
 
+import math
+
 import cv2
 import numpy as np
+
+
+def _primitive_outline_ok(mask: np.ndarray, w: int, h: int) -> bool:
+    """True when a low-density component is still a clean primitive
+    silhouette (circle/ellipse ring, right-angle rect ring).
+
+    Slide decorations — circle outlines, box frames — have low bbox fill
+    because their interiors are empty, so a plain density gate drops them
+    and they stay baked into the parent. The contour itself is still a
+    clean primitive, so geometry decides instead of fill ratio.
+    """
+    cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL,
+                               cv2.CHAIN_APPROX_SIMPLE)
+    if not cnts:
+        return False
+    cnt = max(cnts, key=cv2.contourArea)
+    area = cv2.contourArea(cnt)
+    peri = cv2.arcLength(cnt, True)
+    if area <= 1 or peri <= 0:
+        return False
+    aspect = w / float(max(1, h))
+    circularity = 4.0 * math.pi * area / (peri * peri)
+    if circularity >= 0.80 and 0.67 <= aspect <= 1.50:
+        return True
+    approx = cv2.approxPolyDP(cnt, 0.04 * peri, True)
+    if len(approx) != 4:
+        return False
+    if area / float(max(1, w * h)) < 0.85:
+        return False
+    pts = approx.reshape(-1, 2).astype(np.float32)
+    for i in range(4):
+        p0, p1, p2 = pts[i], pts[(i + 1) % 4], pts[(i + 2) % 4]
+        a, b = p0 - p1, p2 - p1
+        cos = float(a @ b) / (
+            float(np.linalg.norm(a) * np.linalg.norm(b)) + 1e-6)
+        ang = math.degrees(math.acos(max(-1.0, min(1.0, cos))))
+        if abs(ang - 90.0) > 14.0:
+            return False
+    return True
 
 
 def _sample_local_bg(
@@ -250,21 +291,28 @@ def detect_internal_shapes(
         diff_to_mode = np.max(
             np.abs(inner_fg - winner[None, :]), axis=1)
         close = inner_fg[diff_to_mode <= 25]
-        if len(close) < max(8, int(0.15 * len(inner_fg))):
-            close = inner_fg
-        bg_color = np.median(close, axis=0).astype(np.float32)
-        # Bail when the parent isn't a uniformly-filled card. The
-        # internal-shape concept assumes one dominant fill that we can
-        # paint over; when the bbox covers a composite (multiple disjoint
-        # cards + connector lines + a tinted background), the modal
-        # cluster only represents 30-40 % of the foreground and the rest
-        # of the foreground gets flagged as "different from bg" — turning
-        # every card inside the composite into a fillable shape. We
-        # require the modal cluster to cover >=60 % of the foreground so
-        # only true single-card parents go through the internal-shape
-        # fill path.
-        if len(close) < 0.60 * len(inner_fg):
-            return [], []
+        if len(close) >= max(8, int(0.15 * len(inner_fg))):
+            bg_color = np.median(close, axis=0).astype(np.float32)
+        else:
+            bg_color = np.median(inner_fg, axis=0).astype(np.float32)
+        # A composite parent (multiple cards + connectors + a tinted
+        # background) has no single dominant fill: the modal cluster
+        # covers well under 60 % of the foreground. And a crop that is
+        # mostly slide background (a lone decorative ring on white)
+        # makes the modal foreground cluster the shape's own colour —
+        # seeding with that inverts the mask. Either way, fall back to
+        # the corner slide-bg for segmentation: the parent's own body
+        # then surfaces as border-touching components that the
+        # candidate loop rejects, while genuinely nested cards / rings
+        # segment cleanly. Every kept candidate still has to pass the
+        # local `_fill_has_reasonable_parent_support` test here plus
+        # `clean_child_fill` (simulate + verify) in the caller before
+        # anything is inpainted. Bailing out on these parents entirely
+        # used to keep every nested card/ring baked into the parent
+        # forever (issue: 原生形状没有做好).
+        if (len(close) < 0.60 * len(inner_fg)
+                or len(inner_fg) < 0.10 * flat_full.size):
+            bg_color = slide_bg.astype(np.float32)
 
     # "Different from bg" — diff >= 8 per channel. Lower than the main
     # component threshold (S>12 / gray<245) so subtle inset rectangles
@@ -303,23 +351,33 @@ def detect_internal_shapes(
     fill_jobs: list[tuple] = []
     for i in range(1, n):
         x, y, w_, h_, area = stats[i]
-        if w_ < min_dim or h_ < min_dim or w_ > max_dim or h_ > max_dim:
+        if w_ < min_dim or h_ < min_dim:
             continue
         if area < min_area:
             continue
+        shape_mask = (labels == i).astype(np.uint8)
         bbox_density = area / float(w_ * h_)
+        dim_cap = max_dim
         if bbox_density < 0.55:
+            # Rings / box frames fill little of their bbox. Accept them
+            # only when the silhouette is a clean primitive, and give
+            # primitives a bigger size window (decorative circles are
+            # often much larger than ordinary UI chips).
+            if not _primitive_outline_ok(shape_mask, w_, h_):
+                continue
+            dim_cap = max(dim_cap, int(round(600 * scale)))
+        if w_ > dim_cap or h_ > dim_cap:
             continue
         # Discard shapes that touch the crop border — those are usually
         # the parent's own outline reaching the bbox edge, not an internal
         # element.
         if x == 0 or y == 0 or x + w_ == w or y + h_ == h:
             continue
-        shape_mask = labels == i
+        shape_mask_bool = labels == i
         # Filter shapes that are almost entirely text. A single OCR text
         # bbox getting picked up here would inflate the shape count for
         # zero benefit (the text is already an editable text element).
-        text_overlap = int((shape_mask & text_mask).sum())
+        text_overlap = int((shape_mask_bool & text_mask).sum())
         if text_overlap > 0.7 * area:
             continue
         # Fill the shape's bbox (not just the mask) so antialiased edges

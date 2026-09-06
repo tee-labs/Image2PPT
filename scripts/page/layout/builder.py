@@ -113,6 +113,7 @@ class LayoutBuilder:
         # inpainted out, and below the editable text.
         self.shape_elements: list[dict] = []
         self.front_shape_elements: list[dict] = []
+        self.front_images: list[dict] = []
         self.text_elements: list[dict] = []
         self.text_boxes = [
             tuple(int(v) for v in el["bbox"])
@@ -774,6 +775,33 @@ class LayoutBuilder:
         # visually-identical labels (`1000亿元` vs `24.22%`).
         self.text_elements = unify_group_sizes(self.text_elements)
         self.image_elements = topo_sort_by_containment(self.image_elements)
+        # Front shapes render above every image. A primitive lifted out
+        # of a parent card (solid circle, chip) would therefore hide the
+        # sub-icon that was lifted out of the same region — both were
+        # inpainted off the parent, so the shape must re-order to sit
+        # BELOW anything contained inside it.
+        front_boxes = [
+            (el["box"][0], el["box"][1],
+             el["box"][0] + el["box"][2], el["box"][1] + el["box"][3])
+            for el in self.front_shape_elements
+        ]
+        self.front_images: list[dict] = []
+        if front_boxes:
+            kept: list[dict] = []
+            for el in self.image_elements:
+                x, y, w, h = el["box"]
+                area = max(1, w * h)
+                contained = False
+                for fx1, fy1, fx2, fy2 in front_boxes:
+                    ox1, oy1 = max(x, fx1), max(y, fy1)
+                    ox2, oy2 = min(x + w, fx2), min(y + h, fy2)
+                    if ox2 <= ox1 or oy2 <= oy1:
+                        continue
+                    if (ox2 - ox1) * (oy2 - oy1) >= 0.85 * area:
+                        contained = True
+                        break
+                (self.front_images if contained else kept).append(el)
+            self.image_elements = kept
 
     def write(self) -> None:
         manifest = {
@@ -797,6 +825,7 @@ class LayoutBuilder:
             "elements": (self.shape_elements
                          + self.image_elements
                          + self.front_shape_elements
+                         + self.front_images
                          + self.text_elements),
         }
         Path(self.args.out_layout).parent.mkdir(parents=True, exist_ok=True)
