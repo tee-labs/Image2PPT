@@ -38,11 +38,11 @@ from layout.icon_alpha import (  # noqa: E402
 )
 from layout.lists import strip_leading_list_markers  # noqa: E402
 from layout.outline import (  # noqa: E402
-    _outline_should_be_native_shape,
     _outline_should_keep_full_crop,
     _sample_card_fill_color,
     _sample_outline_color,
     _split_filled_outline_rows,
+    _rotated_rect_candidate,
     classify_filled_shape,
     classify_connector_line,
     classify_outline_ring,
@@ -530,19 +530,18 @@ class LayoutBuilder:
         has_mask = bool(mask_path and Path(mask_path).exists())
         if role == "outline" and self._outline_carried_by_large_parent(el):
             return
-        # Wide/tall card outlines go straight to round_rect; near-square
-        # ones must first prove they are a circle ring (oval) or a
-        # straight-sided ring (round_rect) — otherwise keep the PNG.
+        # Outline rings classify per silhouette: circle-hug -> oval,
+        # straight sides -> round_rect (with a corner-measured radius),
+        # ellipse-hug (wide decorative ovals) -> oval. Anything else
+        # keeps the pixel-perfect PNG. Routing every aspect through the
+        # classifier replaces the old blind wide/tall -> round_rect
+        # rule that drew boxes over ellipse outlines.
         ring_shape: tuple[str, float] | None = None
         if (self._enable_native_outline and role == "outline"
                 and not self._outline_has_top_badge(el)):
-            if _outline_should_be_native_shape(
-                    (int(x1), int(y1), int(x2), int(y2))):
-                ring_shape = ("round_rect", 0.08)
-            else:
-                ring_shape = classify_outline_ring(
-                    self.cleaned,
-                    (int(x1), int(y1), int(x2), int(y2)), mask_path)
+            ring_shape = classify_outline_ring(
+                self.cleaned,
+                (int(x1), int(y1), int(x2), int(y2)), mask_path)
         if ring_shape:
             if self._is_redundant_multi_card_outline(el):
                 return
@@ -633,6 +632,21 @@ class LayoutBuilder:
                         line_el["arrow"] = arrow
                     self.front_shape_elements.append(line_el)
                     return
+            # Skewed solid rectangles (diagonal banners, tilted cards)
+            # fail every upright coverage band; lift them with the
+            # min-area rect + a rotation the PPTX builder applies
+            # around the shape centre.
+            rotated = _rotated_rect_candidate(crop)
+            if rotated is not None:
+                rx, ry, rw, rh, rot_deg, rfill, rline = rotated
+                self.front_shape_elements.append({
+                    "type": "shape", "name": el["id"], "shape": "rect",
+                    "box": [int(x1) + rx, int(y1) + ry, rw, rh],
+                    "fill": rfill, "line": rline,
+                    "line_width": 0.9,
+                    "rotation": rot_deg,
+                })
+                return
             classified = classify_filled_shape(crop)
             if classified is not None:
                 shape_kind, fill_hex, line_hex, radius, line_px = classified
@@ -646,8 +660,13 @@ class LayoutBuilder:
                     # contract) so only the circle outline is drawn.
                     "fill": fill_hex or "transparent",
                     "line": line_hex,
-                    "line_width": 0.9, "radius": radius,
+                    "line_width": 0.9,
                 }
+                # Only round_rect consumes the MSO corner adjustment;
+                # zeroing adjustments on parallelogram/hexagon/pentagon
+                # would deform their default geometry.
+                if radius:
+                    shape_el["radius"] = radius
                 if line_px > 0:
                     shape_el["line_width"] = max(
                         0.75, line_px * self.pt_per_px)

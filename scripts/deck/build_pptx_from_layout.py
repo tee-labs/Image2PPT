@@ -118,6 +118,9 @@ def shape_type(value: str | None) -> MSO_SHAPE:
         "diamond": MSO_SHAPE.DIAMOND,
         "triangle": MSO_SHAPE.ISOSCELES_TRIANGLE,
         "trapezoid": MSO_SHAPE.TRAPEZOID,
+        "parallelogram": MSO_SHAPE.PARALLELOGRAM,
+        "pentagon": MSO_SHAPE.REGULAR_PENTAGON,
+        "hexagon": MSO_SHAPE.HEXAGON,
     }.get((value or "rect").lower(), MSO_SHAPE.RECTANGLE)
 
 
@@ -424,7 +427,10 @@ class Builder:
         else:
             shape.line.color.rgb = line
             shape.line.width = Pt(float(el.get("line_width", 1)))
-        if len(shape.adjustments) and "radius" in el:
+        # Only ROUNDED_RECTANGLE consumes the corner adjustment; the
+        # classifier omits "radius" for other adjusted autoshapes
+        # (parallelogram/hexagon) because 0.0 would deform them.
+        if len(shape.adjustments) and float(el.get("radius") or 0) > 0:
             shape.adjustments[0] = float(el["radius"])
         if "rotation" in el:
             shape.rotation = float(el["rotation"])
