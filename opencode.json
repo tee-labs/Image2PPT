@@ -40,6 +40,9 @@
       "models": {
         "deepseek-v4-flash-free": {
           "name": "deepseek-v4-flash-free"
+        },
+        "muse-spark-1.3-contributor-free": {
+          "name": "muse-spark-1.3-contributor-free"
         }
       }
     }
