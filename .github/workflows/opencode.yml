@@ -48,7 +48,7 @@ jobs:
           COMMENT="${{ github.event.comment.body }}"
           DEFAULT="glm/glm-5.3-flash"
           if [[ "$COMMENT" == *"@zen"* ]]; then
-            M="zen/deepseek-v4-flash-free"
+            M="zen/muse-spark-1.3-contributor-free"
           elif [[ "$COMMENT" == *"@glm52"* ]]; then
             M="glm/glm-5.2"
           elif [[ "$COMMENT" == *"@glm53"* ]]; then
