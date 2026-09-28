@@ -185,11 +185,19 @@ class ClassifyFilledShapeTests(unittest.TestCase):
         self.assertEqual(fill, "#FAF5EE")
         self.assertEqual(line, "#C8C8C8")
 
-    def test_pale_borderless_tint_rejected(self) -> None:
-        # No border stroke anywhere: a flat native fill would render an
-        # invisible box over a soft-edged tint, so keep the PNG path.
+    def test_pale_borderless_tint_lifts(self) -> None:
+        # Phase 4 reversal of the old ghost-pale gate: a uniform
+        # borderless tint card lifts borderless (self-coloured line)
+        # instead of staying a flattened PNG. Page-scale tints are kept
+        # off this path by role gating upstream (background role /
+        # detector size caps), not here.
         img = np.full((200, 300, 3), (238, 245, 250), dtype=np.uint8)
-        self.assertIsNone(classify_filled_shape(img))
+        hit = classify_filled_shape(img)
+        self.assertIsNotNone(hit)
+        kind, fill, line, _radius, _line_px = hit
+        self.assertEqual(kind, "rect")
+        self.assertEqual(fill, "#FAF5EE")
+        self.assertEqual(line, "#FAF5EE")
 
     def test_user_uploaded_ring_asset(self) -> None:
         """The exact 86x88 RGBA asset from the issue, composited on
