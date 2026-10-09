@@ -35,6 +35,8 @@ from icon import (  # noqa: E402
     detect_white_subicons,
     inpaint_region_inplace,
 )
+from icon.detect import _sample_local_bg  # noqa: E402
+from icon.regions import detect_color_regions  # noqa: E402
 
 from inventory.badge_trim import trim_filled_badge  # noqa: E402
 from inventory.child_fill import (  # noqa: E402
@@ -57,8 +59,9 @@ def _box4(record: tuple) -> tuple[int, int, int, int]:
 def _inventory_sort_key(e: dict) -> tuple:
     """Stable order: image first, by role priority, then top-to-bottom."""
     role_order = {
-        "background": 0, "container": 1, "outline": 2, "internal": 3,
-        "badge_subicon": 4, "connector": 4, "line_subicon": 4, "subicon": 4,
+        "background": 0, "container": 1, "outline": 2, "region": 3,
+        "internal": 3, "badge_subicon": 4, "connector": 4,
+        "line_subicon": 4, "subicon": 4,
     }
     if e.get("type") == "image":
         role = e.get("role")
@@ -141,6 +144,7 @@ class InventoryBuilder:
         self.subicon_records: list[tuple] = []
         self.line_subicon_records: list[tuple] = []
         self.internal_shape_records: list[tuple] = []
+        self.region_records: list[tuple] = []
         self.inpainted_children: set[tuple[int, int, int, int]] = set()
         self.unclean_nested_children: set[tuple[int, int, int, int]] = set()
 
@@ -293,10 +297,18 @@ class InventoryBuilder:
             [_box4(r) for r in self.subicon_records]
             + [_box4(r) for r in self.line_subicon_records]
             + [_box4(r) for r in self.internal_shape_records]
+            + [_box4(r) for r in self.region_records]
         )
+        c_area = max(1, (ix2 - ix1) * (iy2 - iy1))
         for box in existing:
             if self._box_overlap_ratio(
-                    (ix1, iy1, ix2, iy2), box) >= 0.5:
+                    (ix1, iy1, ix2, iy2), box) < 0.5:
+                continue
+            o_area = max(1, (box[2] - box[0]) * (box[3] - box[1]))
+            # Same-size dedupe only: a candidate that merely CONTAINS a
+            # small existing record (every card contains glyph fragments
+            # on dense slides) must not be swallowed by it.
+            if min(c_area, o_area) / max(c_area, o_area) >= 0.55:
                 return True
         # An outline record describing the SAME card already renders
         # fill + border natively; a parallel internal record would
@@ -433,12 +445,73 @@ class InventoryBuilder:
         """
         self._scan_internal_shapes_inplace(0, 0, self.img_w, self.img_h)
 
+    def _scan_color_regions_inplace(self) -> None:
+        """Carve flat-fill cards out of merged blobs by fill color.
+
+        Real renders tint card fills 10-20 channel steps off the canvas,
+        so the edge/fill foreground fuses the whole content area into
+        one blob — no interior holes, no separate border rings, and the
+        contour / CC-based detectors all die (every card stays baked in
+        the flattened background PNG). Dominant-fill-color connected
+        components reconstruct the cards instead. Each region gets:
+          - its own pixels inpainted out of ``cleaned`` so parents don't
+            bake it,
+          - a RECONSTRUCTED pristine crop (text-erased pixels + interior
+            holes refilled with the region color) stored beside the
+            masks, which LayoutBuilder classifies and, on failure,
+            emits as the region's own asset.
+        """
+        text_only = cv2.imread(str(self.text_only_path))
+        probe = text_only if text_only is not None else self.icon_probe
+        regions = detect_color_regions(
+            probe,
+            ocr_text_items=self.ocr_text_items,
+            scale=self.scale,
+            min_dim=s_length(20, self.scale),
+            min_area=s_area(400, self.scale),
+        )
+        if not regions:
+            return
+        masks_out_dir = (Path(self.args.masks_dir)
+                         if self.args.masks_dir else None)
+        if masks_out_dir is None:
+            out_path = Path(self.args.out)
+            masks_out_dir = out_path.with_name(f"{out_path.stem}_masks")
+        masks_out_dir.mkdir(parents=True, exist_ok=True)
+        ring = max(2, int(round(2 * self.scale)))
+        for x1, y1, x2, y2, color, comp in regions:
+            if self._shape_box_already_covered(x1, y1, x2, y2):
+                continue
+            mask_crop = comp[y1:y2, x1:x2]
+            # Reconstructed pristine crop: text-erased pixels, interior
+            # holes (icons, chips, glyph remnants) refilled with the
+            # region fill. The outer 2 px ring is kept — border strokes
+            # live there and belong to the card.
+            crop = probe[y1:y2, x1:x2].copy()
+            ch, cw = crop.shape[:2]
+            interior = np.ones((ch, cw), dtype=bool)
+            interior[:ring, :] = interior[-ring:, :] = False
+            interior[:, :ring] = interior[:, -ring:] = False
+            holes = interior & ~mask_crop
+            crop[holes] = color
+            crop_rel = None
+            crop_path = masks_out_dir / f"region_{len(self.region_records):03d}.png"
+            if cv2.imwrite(str(crop_path), crop):
+                crop_rel = str(crop_path)
+            local = self.cleaned[y1:y2, x1:x2]
+            ring_px = _sample_local_bg(
+                probe, x1, y1, x2, y2, color.astype(np.uint8), self.scale)
+            inpaint_region_inplace(local, mask_crop, scale=self.scale,
+                                   fill_color=ring_px)
+            self.region_records.append((x1, y1, x2, y2, crop_rel))
+
     def _drop_foregrounds_covered_by_shapes(self) -> None:
         """Drop foregrounds whose bbox is largely covered by sub-icons."""
         shape_boxes = (
             [_box4(r) for r in self.subicon_records]
             + [_box4(r) for r in self.line_subicon_records]
             + [_box4(r) for r in self.internal_shape_records]
+            + [_box4(r) for r in self.region_records]
         )
 
         def covered(fx1, fy1, fx2, fy2) -> bool:
@@ -582,6 +655,7 @@ class InventoryBuilder:
             + [_box4(r) for r in self.subicon_records]
             + [_box4(r) for r in self.line_subicon_records]
             + [_box4(r) for r in self.internal_shape_records]
+            + [_box4(r) for r in self.region_records]
             + [(x1, y1, x2, y2) for (x1, y1, x2, y2, _) in self.outline_records]
         )
         covered = np.zeros_like(residual_mask, dtype=np.uint8)
@@ -660,6 +734,16 @@ class InventoryBuilder:
                 "bbox": [int(x1), int(y1), int(x2), int(y2)],
                 "source": "source", "role": "internal",
             })
+            self.visual_idx += 1
+        for x1, y1, x2, y2, region_crop in self.region_records:
+            entry = {
+                "id": f"v{self.visual_idx:03d}", "type": "image",
+                "bbox": [int(x1), int(y1), int(x2), int(y2)],
+                "source": "cleaned", "role": "region",
+            }
+            if region_crop:
+                entry["region_crop"] = region_crop
+            self.inventory.append(entry)
             self.visual_idx += 1
         for x1, y1, x2, y2, line_mask in self.line_subicon_records:
             comp_id = f"v{self.visual_idx:03d}"
@@ -790,6 +874,7 @@ class InventoryBuilder:
         # survives as a flattened PNG (the header-band card case).
         self._drop_outlines_duplicated_by_full_crop()
         self._scan_whole_page_primitives_inplace()
+        self._scan_color_regions_inplace()
         self._drop_foregrounds_covered_by_shapes()
         self._inpaint_nested_foreground_in_parents()
         self._coverage_residual_pass()

@@ -56,6 +56,7 @@ from layout.zorder import topo_sort_by_containment  # noqa: E402
 _CHILD_ROLES = {
     "container",
     "internal",
+    "region",
     "subicon",
     "badge_subicon",
     "connector",
@@ -176,7 +177,7 @@ class LayoutBuilder:
             mask = (gray > 185) & (hsv_[:, :, 1] < 70)
         elif role in {"badge_subicon", "connector", "line_subicon"}:
             mask = _line_art_alpha(crop_child) > 12
-        elif role in {"internal", "preserve_visual_icon"}:
+        elif role in {"internal", "region", "preserve_visual_icon"}:
             mask = np.ones(crop_child.shape[:2], dtype=bool)
         else:
             gray = cv2.cvtColor(crop_child, cv2.COLOR_BGR2GRAY)
@@ -517,6 +518,14 @@ class LayoutBuilder:
         role = el.get("role")
         if self._connector_carried_by_container(el):
             return
+        # Colour-region records classify on (and fall back to) their
+        # reconstructed pristine crop — cleaned no longer holds the
+        # region, its own pixels were inpainted out for the parents.
+        region_crop_img = None
+        if role == "region":
+            region_crop_path = el.get("region_crop")
+            if region_crop_path and Path(region_crop_path).exists():
+                region_crop_img = cv2.imread(str(region_crop_path))
         if role == "container":
             src_img = self.text_only if self.text_only is not None else self.cleaned
         elif role in _ICON_PAD_ROLES or role == "preserve_visual_icon":
@@ -526,6 +535,8 @@ class LayoutBuilder:
         elif el.get("source") == "source":
             # Prefer text-erased sidecar; fall back to source if absent.
             src_img = self.text_only if self.text_only is not None else self.source
+        elif region_crop_img is not None:
+            src_img = region_crop_img
         else:
             src_img = self.cleaned
         mask_path = el.get("mask_path")
@@ -577,12 +588,18 @@ class LayoutBuilder:
             or implicit_cv2_icon
         )
         bx1, by1, bx2, by2 = int(x1), int(y1), int(x2), int(y2)
-        x1, y1, x2, y2 = _pad_icon_bbox(
-            (x1, y1, x2, y2), src_img, self.text_boxes, role,
-            allow_text_overlap=text_erased_crop)
-        crop = src_img[y1:y2, x1:x2].copy()
-        crop = self._inpaint_children_for_parent_asset(
-            crop, el, (int(x1), int(y1), int(x2), int(y2)))
+        if region_crop_img is not None:
+            # Colour-region records: skip icon padding — the bbox is the
+            # card itself and the reconstructed crop matches it exactly.
+            x1, y1, x2, y2 = bx1, by1, bx2, by2
+            crop = region_crop_img.copy()
+        else:
+            x1, y1, x2, y2 = _pad_icon_bbox(
+                (x1, y1, x2, y2), src_img, self.text_boxes, role,
+                allow_text_overlap=text_erased_crop)
+            crop = src_img[y1:y2, x1:x2].copy()
+            crop = self._inpaint_children_for_parent_asset(
+                crop, el, (int(x1), int(y1), int(x2), int(y2)))
         contained_outline_boxes = (
             self._contained_child_outline_boxes(el)
             if role == "outline" else []
@@ -628,6 +645,12 @@ class LayoutBuilder:
             # keep their own crop.
             if el.get("source") == "source":
                 cls_crop = crop
+            elif region_crop_img is not None:
+                # The reconstructed pristine card: text erased, interior
+                # children refilled with the region colour. cleaned no
+                # longer holds the region (its own pixels were inpainted
+                # out for the parents' sake).
+                cls_crop = region_crop_img.copy()
             else:
                 cls_crop = self.cleaned[y1:y2, x1:x2].copy()
             # Skewed solid rectangles (diagonal banners, tilted cards)
