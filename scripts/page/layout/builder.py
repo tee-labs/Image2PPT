@@ -615,42 +615,26 @@ class LayoutBuilder:
         # background stays excluded.
         if (role != "background"
                 and self._enable_native_outline):
-            # Straight connectors/dividers become native line elements
-            # (draggable, recolourable, dash/arrow preserved) instead of
-            # line-art PNG crops. Classifier failure falls through to
-            # the unchanged paths below.
-            if role == "connector":
-                line_hit = classify_connector_line(crop)
-                if line_hit is None:
-                    # L-shaped elbows: same native-line contract, three
-                    # points instead of two.
-                    line_hit = classify_elbow_line(crop)
-                if line_hit is not None:
-                    points_flat, line_hex, width_px, dash, arrow = line_hit
-                    pts: list[int] = []
-                    for px, py in zip(points_flat[0::2],
-                                      points_flat[1::2]):
-                        pts.append(int(x1) + int(px))
-                        pts.append(int(y1) + int(py))
-                    line_el = {
-                        "type": "line", "name": el["id"],
-                        "box": [int(x1), int(y1),
-                                int(x2 - x1), int(y2 - y1)],
-                        "points": pts,
-                        "line": line_hex,
-                        "line_width": max(0.75, width_px * self.pt_per_px),
-                    }
-                    if dash:
-                        line_el["dash"] = dash
-                    if arrow:
-                        line_el["arrow"] = arrow
-                    self.front_shape_elements.append(line_el)
-                    return
+            # Classify on the CLEANED view. src_img may be the text-only
+            # sidecar (an asset-quality decision for icon-pad roles,
+            # "connector" included), and a container mis-roled as
+            # connector then arrives with every lifted child still
+            # visible — the colour-uniformity gates can only fail on
+            # it. cleaned already carries the inventory stage's
+            # solid-fill erasure of every lifted child, so it is used
+            # as-is: re-inpainting here would smear texture into the
+            # crop. Elements recorded from the "source" view
+            # (internal/subicon lifts) are erased from cleaned, so they
+            # keep their own crop.
+            if el.get("source") == "source":
+                cls_crop = crop
+            else:
+                cls_crop = self.cleaned[y1:y2, x1:x2].copy()
             # Skewed solid rectangles (diagonal banners, tilted cards)
             # fail every upright coverage band; lift them with the
             # min-area rect + a rotation the PPTX builder applies
             # around the shape centre.
-            rotated = _rotated_rect_candidate(crop)
+            rotated = _rotated_rect_candidate(cls_crop)
             if rotated is not None:
                 rx, ry, rw, rh, rot_deg, rfill, rline = rotated
                 self.front_shape_elements.append({
@@ -661,7 +645,7 @@ class LayoutBuilder:
                     "rotation": rot_deg,
                 })
                 return
-            classified = classify_filled_shape(crop)
+            classified = classify_filled_shape(cls_crop)
             if classified is not None:
                 shape_kind, fill_hex, line_hex, radius, line_px = classified
                 shape_el = {
@@ -687,11 +671,55 @@ class LayoutBuilder:
                 # Block arrows carry shaft/head proportions measured off
                 # the silhouette so the autoshape matches the raster.
                 if shape_kind.endswith("_arrow"):
-                    geom = arrow_geometry(crop)
+                    geom = arrow_geometry(cls_crop)
                     if geom is not None:
                         shape_el["adjustments"] = [geom[1], geom[2]]
                 self.front_shape_elements.append(shape_el)
                 return
+            # Straight connectors/dividers become native line elements
+            # (draggable, recolourable, dash/arrow preserved) instead of
+            # line-art PNG crops. Tried for EVERY role, not just
+            # "connector": the role tag comes from is_connector_like,
+            # whose (now ink-based) caps still exclude long diagonals
+            # and elbows — exactly the strokes these classifiers handle.
+            # Both classifiers are self-gating (thin, straight, one
+            # colour), so real shapes never reach a line emit.
+            line_hit = classify_connector_line(cls_crop, self.inpaint_scale)
+            if line_hit is None:
+                # L-shaped elbows: same native-line contract, three
+                # points instead of two.
+                line_hit = classify_elbow_line(cls_crop)
+            if line_hit is not None:
+                points_flat, line_hex, width_px, dash, arrow = line_hit
+                pts: list[int] = []
+                for px, py in zip(points_flat[0::2],
+                                  points_flat[1::2]):
+                    pts.append(int(x1) + int(px))
+                    pts.append(int(y1) + int(py))
+                line_el = {
+                    "type": "line", "name": el["id"],
+                    "box": [int(x1), int(y1),
+                            int(x2 - x1), int(y2 - y1)],
+                    "points": pts,
+                    "line": line_hex,
+                    "line_width": max(0.75, width_px * self.pt_per_px),
+                }
+                if dash:
+                    line_el["dash"] = dash
+                if arrow:
+                    line_el["arrow"] = arrow
+                self.front_shape_elements.append(line_el)
+                return
+        # Sub-visual fragments (text-erase remnants, AA slivers, inpaint
+        # arcs): the inventory contract admits real elements from 18 px
+        # min-dim up, so anything this small that no classifier claimed
+        # is noise — emitting it would put a speck PNG on the slide.
+        if (role != "background"
+                and original_w * original_h
+                < 1600.0 * self.inpaint_scale ** 2
+                and min(original_w, original_h)
+                < max(18.0, 18.0 * self.inpaint_scale)):
+            return
         if has_mask and not keep_outline_full_crop:
             if self._emit_masked_image(el, asset_name, mask_path, src_img,
                                        crop, contained_outline_boxes,

@@ -23,9 +23,9 @@ def is_connector_like(crop: np.ndarray, scale: float) -> bool:
     if crop.size == 0:
         return False
     h, w = crop.shape[:2]
-    if max(w, h) < s_length(26, scale):
-        return False
-    if w * h > s_area(24000, scale):
+    # 48 px at 720-scale: below this, "connectors" are overwhelmingly
+    # text-erase remnants and shadow-edge fragments, not real strokes.
+    if max(w, h) < s_length(48, scale):
         return False
     gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
     hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
@@ -36,6 +36,12 @@ def is_connector_like(crop: np.ndarray, scale: float) -> bool:
     )
     fg_count = int(fg.sum())
     if fg_count < s_area(12, scale):
+        return False
+    # Cap INK, not the bbox: a diagonal's bbox inflates by 1/sin(θ) and
+    # an elbow's by the product of its arms, so the old bbox-area cap
+    # (24000) rejected exactly the long strokes this role exists for,
+    # while a filled card (huge ink) is still rejected either way.
+    if fg_count > s_area(24000, scale):
         return False
     density = fg_count / float(max(1, w * h))
     aspect = max(w, h) / float(max(1, min(w, h)))

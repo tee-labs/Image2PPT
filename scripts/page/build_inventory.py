@@ -131,7 +131,62 @@ def detect_components(cleaned: np.ndarray, min_area: int, dilate_size: int) -> l
         if area < min_area:
             continue
         out.append((int(x), int(y), int(x + ww), int(y + hh), int(area)))
+    out.extend(_dash_bridged_components(mask, out, min_area, cleaned))
     return out
+
+
+def _dash_bridged_components(mask: np.ndarray,
+                             existing: list[tuple],
+                             min_area: int,
+                             cleaned: np.ndarray) -> list[tuple]:
+    """Recover thin dashed strokes the plain CC pass shatters.
+
+    A 2 px dashed divider breaks into dash components of ~25-70 px²,
+    below min_area, and the dilate-sized close cannot bridge typical
+    6-12 px dash gaps — the whole divider never enters the inventory.
+    Directional closes along each axis bridge the gaps without fattening
+    the stroke; only elongated candidates whose RAW dash ink clears
+    min_area and whose bridged duty cycle looks like a dash pattern are
+    added, and anything an already-detected component covers is skipped.
+    """
+    scale = pixel_scale(cleaned)
+    k = max(7, int(round(15 * scale)))
+    bridged = cv2.morphologyEx(mask, cv2.MORPH_CLOSE,
+                               np.ones((1, k), np.uint8))
+    bridged = cv2.morphologyEx(bridged, cv2.MORPH_CLOSE,
+                               np.ones((k, 1), np.uint8))
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(bridged, 8)
+    raw = mask > 0
+    added: list[tuple] = []
+    for i in range(1, n):
+        x, y, w_, h_, area = (int(v) for v in stats[i])
+        if w_ < 4 or h_ < 2:
+            continue
+        if max(w_, h_) / float(min(w_, h_)) < 4.0:
+            continue  # only elongated strokes
+        comp = labels == i
+        ink = int((raw & comp).sum())
+        if ink < min_area:
+            continue  # total dash ink below the noise floor
+        duty = ink / float(max(1, area))
+        if duty < 0.15 or duty > 0.85:
+            continue  # solid (already a normal CC) or scattered noise
+        box = (x, y, x + w_, y + h_)
+        box_area = max(1, w_ * h_)
+        dup = False
+        for ex1, ey1, ex2, ey2, _ea in existing:
+            ix1, iy1 = max(box[0], ex1), max(box[1], ey1)
+            ix2, iy2 = min(box[2], ex2), min(box[3], ey2)
+            if ix2 <= ix1 or iy2 <= iy1:
+                continue
+            inter = (ix2 - ix1) * (iy2 - iy1)
+            e_area = max(1, (ex2 - ex1) * (ey2 - ey1))
+            if inter >= 0.70 * min(box_area, e_area):
+                dup = True
+                break
+        if not dup:
+            added.append((x, y, x + w_, y + h_, ink))
+    return added
 
 
 def _find_gaps(line_has_fg: np.ndarray, min_gap: int) -> list[tuple]:

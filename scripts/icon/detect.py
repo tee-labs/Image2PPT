@@ -223,6 +223,33 @@ def _line_visual_support(
     return (rx1, ry1, rx2, ry2), visual, local_bg
 
 
+def _cut_thin_bridges(mask_bool: np.ndarray,
+                      scale: float) -> list[tuple[np.ndarray, tuple]]:
+    """Split a merged component along thin connector strokes.
+
+    Shapes glued by a 2-4 px connector form one connected component the
+    per-candidate gates must reject as oversized. An opening with a
+    directional (k×1 / 1×k) kernel erodes strokes that lack extent in
+    that direction — thin horizontal bars vanish under the vertical
+    kernel, thin vertical bars under the horizontal one — while solids
+    with ≥k px extent survive (corners slightly rounded). Returns the
+    surviving sub-components as (mask, stats) pairs.
+    """
+    k = max(5, int(round(7 * scale)))
+    m = mask_bool.astype(np.uint8) * 255
+    # Vertical-kernel opening strips horizontal thin strokes; horizontal
+    # kernel strips vertical ones. AND the two: only content with
+    # ≥k extent in BOTH directions survives — solids stay, thin
+    # connectors (either orientation) are severed. (OR would restore
+    # every stroke: each opening keeps the other orientation's strokes.)
+    cut = cv2.morphologyEx(m, cv2.MORPH_OPEN, np.ones((k, 1), np.uint8))
+    cut = cv2.bitwise_and(
+        cut, cv2.morphologyEx(m, cv2.MORPH_OPEN, np.ones((1, k), np.uint8)))
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(cut, 8)
+    return [(labels == i, tuple(int(v) for v in stats[i]))
+            for i in range(1, n)]
+
+
 def detect_internal_shapes(
     source: np.ndarray,
     px1: int,
@@ -345,53 +372,43 @@ def detect_internal_shapes(
             filled.astype(np.uint8) * 255, 8)
         shapes: list[tuple] = []
         fill_jobs: list[tuple] = []
-        for i in range(1, n):
-            x, y, w_, h_, area = stats[i]
+
+        def _accept(shape_mask_bool: np.ndarray, x: int, y: int,
+                    w_: int, h_: int, area: int,
+                    allow_border_dense: bool) -> tuple | None:
+            """Shared acceptance gates for a candidate sub-shape.
+
+            ``allow_border_dense`` relaxes the crop-border-touch rule for
+            DENSE solids: a card glued to a sibling by a thin connector
+            was merged into one oversized component whose bbox the card
+            necessarily touches, so the border rule would keep rejecting
+            it after the bridge-cut split it back out. Sparse silhouettes
+            touching the border are still the parent's own frame.
+            """
             if w_ < min_dim or h_ < min_dim:
-                continue
+                return None
             if area < min_area:
-                continue
-            shape_mask = (labels == i).astype(np.uint8)
-            bbox_density = area / float(w_ * h_)
+                return None
+            density = area / float(w_ * h_)
             dim_cap = max_dim
-            if bbox_density < 0.55:
-                # Rings / box frames fill little of their bbox. Accept
-                # them only when the silhouette is a clean primitive,
-                # and give primitives a bigger size window (decorative
-                # circles are often much larger than ordinary UI chips).
-                if not _primitive_outline_ok(shape_mask, w_, h_):
-                    continue
+            if density < 0.55:
+                if not _primitive_outline_ok(shape_mask_bool.astype(np.uint8),
+                                             w_, h_):
+                    return None
                 dim_cap = max(dim_cap, int(round(600 * scale)))
             elif w_ > dim_cap or h_ > dim_cap:
-                # Solid primitives fill their bbox densely, so the
-                # sparse branch never sees them; a 320 px filled circle
-                # would be dropped by the ordinary 220 px chip window
-                # and stay baked into the parent forever. Extend the
-                # window for dense components that are still clean
-                # primitive silhouettes — same trade as the sparse
-                # branch.
-                if not _primitive_outline_ok(shape_mask, w_, h_):
-                    continue
+                if not _primitive_outline_ok(shape_mask_bool.astype(np.uint8),
+                                             w_, h_):
+                    return None
                 dim_cap = max(dim_cap, int(round(600 * scale)))
             if w_ > dim_cap or h_ > dim_cap:
-                continue
-            # Discard shapes that touch the crop border — those are
-            # usually the parent's own outline reaching the bbox edge,
-            # not an internal element.
-            if x == 0 or y == 0 or x + w_ == w or y + h_ == h:
-                continue
-            shape_mask_bool = labels == i
-            # Filter shapes that are almost entirely text. A single OCR
-            # text bbox getting picked up here would inflate the shape
-            # count for zero benefit (the text is already an editable
-            # text element).
+                return None
+            if (x == 0 or y == 0 or x + w_ == w or y + h_ == h):
+                if not (allow_border_dense and density >= 0.90):
+                    return None
             text_overlap = int((shape_mask_bool & text_mask).sum())
             if text_overlap > 0.7 * area:
-                continue
-            # Fill the shape's bbox (not just the mask) so antialiased
-            # edges outside the strict mask also get the bg colour. Pad
-            # ~2 px (at 720-scale) to ensure clean coverage when the
-            # shape mask sits a pixel inside the visible edge.
+                return None
             pad = max(1, int(round(2 * scale)))
             rx1 = max(0, x - pad)
             ry1 = max(0, y - pad)
@@ -403,10 +420,59 @@ def detect_internal_shapes(
                 crop, rx1, ry1, rx2, ry2, bg_color.astype(np.uint8), scale)
             if not _fill_has_reasonable_parent_support(
                     crop, rect, local_bg, scale):
+                return None
+            return (rect, local_bg.astype(np.uint8))
+
+        # Oversized blobs whose silhouette is not a clean primitive are
+        # usually SEVERAL shapes glued by a thin connector, and sparse
+        # border-touchers are either the parent's own frame or a member
+        # glued to the frame (header bands) — defer both to the
+        # bridge-cut retry below instead of dropping outright.
+        deferred: list[np.ndarray] = []
+        for i in range(1, n):
+            x, y, w_, h_, area = stats[i]
+            if w_ < min_dim or h_ < min_dim:
                 continue
+            if area < min_area:
+                continue
+            shape_mask_bool = labels == i
+            density = area / float(w_ * h_)
+            oversized = (w_ > max_dim or h_ > max_dim)
+            if oversized and not _primitive_outline_ok(
+                    shape_mask_bool.astype(np.uint8), int(w_), int(h_)):
+                deferred.append(shape_mask_bool)
+                continue
+            if (x == 0 or y == 0 or x + w_ == w or y + h_ == h) \
+                    and density < 0.90:
+                deferred.append(shape_mask_bool)
+                continue
+            hit = _accept(shape_mask_bool, int(x), int(y),
+                          int(w_), int(h_), int(area),
+                          allow_border_dense=False)
+            if hit is None:
+                continue
+            rect, local_bg = hit
             shapes.append((int(px1 + x), int(py1 + y),
                            int(px1 + x + w_), int(py1 + y + h_)))
-            fill_jobs.append((rect, local_bg.astype(np.uint8)))
+            fill_jobs.append((rect, local_bg))
+
+        # Bridge-cut retry: sever thin connector strokes inside each
+        # deferred merged blob and run the gates on the pieces. Cards
+        # linked by connectors (flow diagrams, org charts) decompose
+        # into their real members; the cut strokes themselves are below
+        # min_dim and stay for the connector-line classifier upstream.
+        for comp_mask in deferred:
+            for piece_mask, (x, y, w_, h_, area) in _cut_thin_bridges(
+                    comp_mask, scale):
+                hit = _accept(piece_mask, int(x), int(y),
+                              int(w_), int(h_), int(area),
+                              allow_border_dense=True)
+                if hit is None:
+                    continue
+                rect, local_bg = hit
+                shapes.append((int(px1 + x), int(py1 + y),
+                               int(px1 + x + w_), int(py1 + y + h_)))
+                fill_jobs.append((rect, local_bg))
         return shapes, fill_jobs
 
     shapes, fill_jobs = _collect(bg_color)

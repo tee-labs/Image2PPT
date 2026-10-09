@@ -1,7 +1,10 @@
 python-pptx
 pillow
 numpy
-opencv-python
+# <5: OpenCV 5.0 changed cv2.findNonZero's return layout ((N,2) vs 4.x
+# (N,1,2)); outline.py now tolerates both, but stay on the 4.x line the
+# pixel thresholds were calibrated against.
+opencv-python>=4.6,<5
 paddleocr>=3.7.0,<3.8.0
 paddlex[ocr]>=3.7.0,<3.8.0
 easyocr

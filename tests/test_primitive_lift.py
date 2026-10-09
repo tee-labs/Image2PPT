@@ -115,16 +115,24 @@ class DetectInternalPrimitiveTests(unittest.TestCase):
             abs((s[2] - s[0]) - 254) < 6 and abs((s[3] - s[1]) - 154) < 6
             for s in shapes))
 
-    def test_ring_fused_with_line_rejected(self) -> None:
-        """A ring merged with a touching line is not a clean primitive —
-        leave it on the parent (no bogus native oval)."""
+    def test_ring_fused_with_line_decomposes(self) -> None:
+        """A ring merged with a touching line used to be rejected
+        wholesale — lifting a bogus native oval would have baked the
+        line into the parent. The bridge-cut retry now severs the thin
+        line, so the ring lifts as its own primitive and the line is
+        left in the image for the connector-line classifier: both
+        members end up native instead of one PNG."""
         img = _white(640, 400)
         cv2.circle(img, (150, 150), 70, ORANGE_BGR, 5)
         cv2.line(img, (218, 150), (400, 150), (150, 150, 150), 3)
         shapes, _ = detect_internal_shapes(
             img, 0, 0, 640, 400,
             min_dim=20, max_dim=220, min_area=400, scale=1.0)
-        self.assertEqual(shapes, [])
+        self.assertEqual(len(shapes), 1)
+        x1, y1, x2, y2 = shapes[0]
+        # The ring alone — the severed line (x >= 218) must not be in it.
+        self.assertLess(x1, 100)
+        self.assertLess(x2, 230)
 
     def test_uniform_card_parent_badges_still_found(self) -> None:
         """Old working path: uniform pale card parent with chips."""

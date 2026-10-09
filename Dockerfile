@@ -113,7 +113,7 @@ RUN pip install \
         python-pptx \
         pillow \
         numpy \
-        opencv-python \
+        'opencv-python>=4.6,<5' \
         'paddleocr==3.7.0' \
         'paddlex[ocr]==3.7.2' \
         'paddlepaddle==3.2.2' \

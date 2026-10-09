@@ -21,6 +21,19 @@ import numpy as np
 from shared.geometry import bgr_to_hex as _bgr_to_hex
 
 
+def _nonzero_points(mask: np.ndarray) -> np.ndarray | None:
+    """cv2.findNonZero with a version-stable (N, 2) point layout.
+
+    OpenCV 4.x returns (N, 1, 2); 5.0.0 returns (N, 2). Both reshape to
+    (N, 2), so callers index ``pts[:, 0]`` / ``pts[:, 1]`` regardless of
+    the installed line.
+    """
+    pts = cv2.findNonZero(mask.astype(np.uint8))
+    if pts is None:
+        return None
+    return pts.reshape(-1, 2)
+
+
 def _sample_outline_color(
     source: np.ndarray,
     bbox: tuple[int, int, int, int],
@@ -904,16 +917,18 @@ def _ellipse_band_fit(mask: np.ndarray):
     ``(rho_p05, rho_p50, rho_p95, thickness_px)`` where ``rho`` is the
     normalised ellipse radius (1.0 == exactly on the perimeter).
     """
-    pts = cv2.findNonZero(mask.astype(np.uint8))
+    pts = _nonzero_points(mask)
     if pts is None or len(pts) < 40:
         return None
-    (ecx, ecy), (ea, eb), eang = cv2.fitEllipse(pts)
+    # fitEllipse needs the (N, 1, 2) contour layout in every OpenCV line.
+    (ecx, ecy), (ea, eb), eang = cv2.fitEllipse(
+        pts.reshape(-1, 1, 2).astype(np.float32))
     a, b = max(ea, eb) / 2.0, min(ea, eb) / 2.0
     if a < 12.0 or b < 6.0:
         return None
     theta = math.radians(eang)
-    xs = pts[:, 0, 0].astype(np.float64) - ecx
-    ys = pts[:, 0, 1].astype(np.float64) - ecy
+    xs = pts[:, 0].astype(np.float64) - ecx
+    ys = pts[:, 1].astype(np.float64) - ecy
     u = xs * math.cos(theta) + ys * math.sin(theta)
     v = -xs * math.sin(theta) + ys * math.cos(theta)
     # ea/eb are FULL axis lengths, so a perimeter point measures rho=1.
@@ -1198,7 +1213,7 @@ def _rotated_rect_candidate(crop_bgr: np.ndarray):
             round(float(angle), 1), fill_hex, line_hex)
 
 
-def classify_connector_line(crop_bgr: np.ndarray):
+def classify_connector_line(crop_bgr: np.ndarray, scale: float = 1.0):
     """Lift a straight connector / divider stroke to a native line.
 
     The stroke must be one thin, straight, uniform-colour run of ink:
@@ -1209,10 +1224,15 @@ def classify_connector_line(crop_bgr: np.ndarray):
     ``(points, line_hex, width_px, dash, arrow)`` — points in crop
     coordinates, ``dash`` in {"dash", "dot", None}, ``arrow`` in
     {"start", "end", None} — or None so the crop stays on the PNG path.
+
+    ``scale`` is the source-height/720 factor; the minimum-length floor
+    scales with it so text-erase remnants and shadow-edge fragments
+    (typically 30-46 px at 720p) never lift as phantom lines.
     """
     h, w = crop_bgr.shape[:2]
     if h < 4 or w < 4:
         return None
+    min_len = max(24.0, 48.0 * scale)
     border = np.concatenate([
         crop_bgr[:2, :].reshape(-1, 3),
         crop_bgr[-2:, :].reshape(-1, 3),
@@ -1237,7 +1257,7 @@ def classify_connector_line(crop_bgr: np.ndarray):
     perp = (pts - mean) @ v2
     length = float(proj.max() - proj.min())
     width_est = len(pts) / max(1.0, length)
-    if length < 24 or width_est > max(6.0, 0.20 * length):
+    if length < min_len or width_est > max(6.0, 0.20 * length):
         return None
     # Straightness is judged on the middle half of the axis: a large
     # arrowhead at one end inflates the whole-silhouette perp spread
@@ -1304,8 +1324,33 @@ def classify_connector_line(crop_bgr: np.ndarray):
     dash = None
     gaps = [g for g in off_runs if g >= 3]
     if len(on_runs) >= 3 and len(gaps) >= 2:
+        # A real dash pattern ALTERNATES REGULARLY: on-runs and gaps stay
+        # near-constant (PPT dash cycles measure ~6-24 px at 720p).
+        # Glyph-remnant strips and inpaint-arc fragments produce ragged,
+        # widely-varying runs that must not read as a dash style.
         on_med = float(np.median(on_runs))
-        dash = "dot" if on_med <= 3.0 else "dash"
+        gap_med = float(np.median(gaps))
+
+        def _cv(vals: list[float]) -> float:
+            m = float(np.mean(vals))
+            return float(np.std(vals)) / m if m > 0 else 99.0
+
+        regular = (on_med <= 30.0 and gap_med <= 24.0
+                   and _cv([float(v) for v in on_runs]) <= 0.65
+                   and _cv([float(v) for v in gaps]) <= 0.65)
+        if regular:
+            dash = "dot" if on_med <= 3.0 else "dash"
+    # Coverage floor: a real stroke (solid, dashed, or dotted) paints a
+    # meaningful fraction of its axis. Scattered fragments — erase
+    # remnants, shadow-edge slivers — leave the axis mostly empty and
+    # must not lift as phantom lines. Dotted patterns run sparse (dot
+    # duty cycles measure ~0.35-0.45), so the floor sits at 0.30; a
+    # SOLID claim (dash is None) must paint essentially the whole axis —
+    # remnant strips break their axis with ragged gaps.
+    if float(occ.sum()) < 0.30 * len(occ):
+        return None
+    if dash is None and float(occ.sum()) < 0.85 * len(occ):
+        return None
     # Dash and arrow styling are independent layout keys, so a dashed
     # arrow (roadmap / dependency connectors) lifts with both.
     px_all = crop_bgr[fg].reshape(-1, 3).astype(np.int16)
@@ -1360,6 +1405,16 @@ def classify_elbow_line(crop_bgr: np.ndarray):
     ys, xs = np.nonzero(m)
     if len(xs) < 24:
         return None
+    # Tighten the dominant stroke to its own ink bbox first: the builder
+    # hands every classifier an icon-PADDED crop, and the side-hug
+    # fractions below measure distance from the CROP edges — a ~10 px
+    # pad pushes a real arm past tol and the elbow never lifts.
+    tx1, tx2 = int(xs.min()), int(xs.max()) + 1
+    ty1, ty2 = int(ys.min()), int(ys.max()) + 1
+    m = m[ty1:ty2, tx1:tx2]
+    h, w = m.shape[:2]
+    if h < 12 or w < 12:
+        return None
     fg_px = int(m.sum())
     stroke = fg_px / max(1.0, float(xs.max() - xs.min() + ys.max() - ys.min()))
     if stroke > 0.35 * min(h, w):
@@ -1399,8 +1454,9 @@ def classify_elbow_line(crop_bgr: np.ndarray):
         break
     if corner_kind is None:
         return None
-    # One uniform stroke colour, sampled from the stroke core.
-    px_all = crop_bgr[m].reshape(-1, 3).astype(np.int16)
+    # One uniform stroke colour, sampled from the stroke core. The mask
+    # is tightened above, so index the matching region of the full crop.
+    px_all = crop_bgr[ty1:ty2, tx1:tx2][m].reshape(-1, 3).astype(np.int16)
     dist_bg = np.abs(px_all - bg[None, :]).max(axis=1)
     core = px_all[dist_bg >= np.percentile(dist_bg, 50)]
     if len(core) < 12:
@@ -1421,9 +1477,13 @@ def classify_elbow_line(crop_bgr: np.ndarray):
     else:
         pts = ((x1, y2), (x2, y2), (x2, y1))
     flat = []
+    # Clamp against the FULL crop dims — pts are in original crop
+    # coordinates, which may exceed the tightened mask's extent when the
+    # crop carried icon padding.
+    cw, chh = crop_bgr.shape[1], crop_bgr.shape[0]
     for px_, py_ in pts:
-        flat.append(max(0, min(w - 1, px_)))
-        flat.append(max(0, min(h - 1, py_)))
+        flat.append(max(0, min(cw - 1, px_)))
+        flat.append(max(0, min(chh - 1, py_)))
     return (tuple(flat), _bgr_to_hex(line_bgr),
             float(max(1.0, stroke)), None, None)
 
@@ -1442,6 +1502,86 @@ def _bg_excluding_fg(crop_bgr: np.ndarray, fg: np.ndarray) -> np.ndarray:
     if len(bg_px) >= 12:
         return np.median(bg_px, axis=0).astype(np.int16)
     return np.array([255, 255, 255], np.int16)
+
+
+def _fg_is_margin_frame(fg: np.ndarray) -> bool:
+    """True when fg is mostly a thin band hugging the crop border.
+
+    A full-bleed shape (header band, wide bar) fills the crop, so the
+    2-px border ring samples the SHAPE's own colour and fg collapses to
+    the parent's frame stroke encircling the crop edge. That ring is not
+    content — the region itself is.
+    """
+    h, w = fg.shape[:2]
+    if w < 8 or h < 8:
+        return False
+    total = int(fg.sum())
+    if total == 0:
+        return True
+    interior = fg[2:h - 2, 2:w - 2]
+    return 1.0 - (float(interior.sum()) / total) >= 0.60
+
+
+def _drop_debris_islands(fg: np.ndarray, cand: np.ndarray,
+                         crop_bgr: np.ndarray) -> np.ndarray:
+    """Remove small INK-LIKE fg islands buried inside a dominant cand
+    region.
+
+    Erased-text remnants — glyph fringes, the eraser's own mid-tone
+    fill patch on saturated cards — are a few high-contrast pixels
+    sitting INSIDE the region's cand mask; too few to be content,
+    exactly the right size to collapse the silhouette when they are the
+    only fg left. Islands departing from the region's fill by ≥120 per
+    channel and covering <8% of it are stripped (a swallowed child is
+    harmless: it keeps its own inventory record and renders on top of
+    the native shape). Faint low-contrast marks such as a dashed
+    placeholder border stay, keeping the PNG path that preserves them.
+    """
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(
+        fg.astype(np.uint8), 8)
+    ink_cap = max(64.0, 0.08 * float(cand.sum()))
+    fill_bgr = _dominant_color(crop_bgr, cand)
+    out = np.zeros_like(fg)
+    for i in range(1, n):
+        island = labels == i
+        area = float(stats[i, cv2.CC_STAT_AREA])
+        if area >= ink_cap:
+            out |= island
+            continue
+        med = np.median(crop_bgr[island].reshape(-1, 3), axis=0)
+        if float(np.max(np.abs(med - fill_bgr))) < 120:
+            out |= island  # not glyph ink — treat as content
+    return out
+
+
+def _corner_standoff(filled: np.ndarray) -> float:
+    """Closest approach of ink to the tight-bbox corner, in pixels.
+
+    A sharp corner runs its edges into the corner (standoff ≈ 0); a
+    rounded corner of radius r keeps a stand-off of r·(√2−1). More
+    robust than corner-patch fill fractions, which read ~0.7 for the
+    small radii (r/min-side ≈ 0.1) typical of deck cards and mis-lift
+    them as sharp rects.
+    """
+    h, w = filled.shape[:2]
+    c = max(3, int(round(min(h, w) * 0.22)))
+    dists = []
+    for ys_sl, xs_sl in ((slice(0, c), slice(0, c)),
+                         (slice(0, c), slice(w - c, None)),
+                         (slice(h - c, None), slice(0, c)),
+                         (slice(h - c, None), slice(w - c, None))):
+        patch = filled[ys_sl, xs_sl]
+        pys, pxs = np.nonzero(patch)
+        if len(pxs) == 0:
+            dists.append(float(c) * 1.2)  # fully rounded-away corner
+            continue
+        # Nearest ink to THIS bbox corner of the patch (top-left patch
+        # → corner (0,0), top-right → (c-1, 0), etc.
+        corner_x = 0 if xs_sl.start == 0 else c - 1
+        corner_y = 0 if ys_sl.start == 0 else c - 1
+        d = np.min(np.hypot(pxs - corner_x, pys - corner_y))
+        dists.append(float(d))
+    return min(dists)
 
 
 def classify_filled_shape(crop_bgr: np.ndarray):
@@ -1485,6 +1625,20 @@ def classify_filled_shape(crop_bgr: np.ndarray):
             | ((hsv[:, :, 1] > 10) & (diff_white > 4)))
     if float(fg.mean()) < 0.02 and float(cand.mean()) < 0.02:
         return None
+    # Near-uniform region + sparse remnants: cand covers a pale card
+    # (fill differs from the canvas bg) while fg collapsed onto a few
+    # dark glyph-fringe pixels INSIDE cand. Those pixels sit within cand
+    # and therefore block the complement repair below, so strip them
+    # first — when nothing real remains the empty-fg repair path takes
+    # over and the card itself segments correctly. The margin-frame
+    # extension covers full-bleed shapes (header bands, wide bars):
+    # their border-ring bg sample IS the shape colour, and fg is just
+    # the parent's frame stroke hugging the crop edge.
+    if 0.0 < float(fg.mean()) <= 0.08 and float(cand.mean()) >= 0.50:
+        fg = _drop_debris_islands(fg, cand, crop_bgr)
+        if float(fg.sum()) < 24.0 or _fg_is_margin_frame(fg):
+            fg = cand
+            bg = _bg_excluding_fg(crop_bgr, fg)
     # Only repair a true inversion: the border-sampled mask must be the
     # COMPLEMENT of the white-diff ink (most fg pixels outside cand), or
     # be empty because the shape fills its whole bbox. On a tinted
@@ -1535,6 +1689,13 @@ def classify_filled_shape(crop_bgr: np.ndarray):
     ty1, ty2 = int(ys_t.min()), int(ys_t.max()) + 1
     filled = filled[ty1:ty2, tx1:tx2]
     tw, th_ = tx2 - tx1, ty2 - ty1
+    # A silhouette this thin is a stroke, not a shape: a plain divider
+    # measures cov=1.0 on its 2-3 px tall tight bbox and would lift as a
+    # hairline "rect", pre-empting the connector-line classifier that
+    # should own it (dash/arrow styling). Native shapes under ~8 px min
+    # side render as hairlines anyway.
+    if min(tw, th_) < 8:
+        return None
     cov = float(filled.mean())
     corner = _corner_fill_fraction(filled)
 
@@ -1574,7 +1735,16 @@ def classify_filled_shape(crop_bgr: np.ndarray):
     # r/s in [0, 0.5]: corner(c=0.12) falls monotonically 1.0 -> 0.0
     # while cov falls 1.0 -> 0.785 (circle). Mid gaps fall back to PNG.
     if cov >= 0.90 and corner >= 0.55:
-        return ("rect", fill_hex, line_hex, 0.0, stroke_px)
+        # Sharp vs lightly-rounded: the patch-fill metric reads ~0.7 for
+        # r/min-side ≈ 0.1 (visibly rounded), so disambiguate with the
+        # corner stand-off before emitting a sharp rect.
+        standoff = _corner_standoff(filled)
+        if standoff <= 3.0:
+            return ("rect", fill_hex, line_hex, 0.0, stroke_px)
+        radius = min(0.5, max(0.08,
+                              standoff / 0.414 / max(1.0, min(th_, tw))))
+        return ("round_rect", fill_hex, line_hex, round(radius, 3),
+                stroke_px)
     if cov >= 0.84 and corner <= 0.45:
         # Corner radius from the area lost to rounding:
         # 1 - cov = (4 - pi) * r^2 / (w * h); the MSO adjustment is
@@ -1639,16 +1809,17 @@ def classify_outline_ring(
                 | ((hsv[:, :, 1] > 8) & (diff_white > 4)))
     if float(mask.mean()) < 0.006:
         return None
-    pts = cv2.findNonZero(mask.astype(np.uint8))
+    pts = _nonzero_points(mask)
     if pts is None:
         return None
-    (_cx, _cy), r = cv2.minEnclosingCircle(pts)
+    pts_f = pts.reshape(-1, 1, 2).astype(np.float32)
+    (_cx, _cy), r = cv2.minEnclosingCircle(pts_f)
     if r < 20:
         return None
     # Circle rings hug one circle: the radial distance distribution is a
     # narrow band. Calibrated on detector-thickness rings: circles measure
     # 0.06-0.14, rounded-square rings >=0.18 (r=0.3), squares ~0.35.
-    d = np.sqrt((pts[:, 0, 0] - _cx) ** 2 + (pts[:, 0, 1] - _cy) ** 2)
+    d = np.sqrt((pts[:, 0] - _cx) ** 2 + (pts[:, 1] - _cy) ** 2)
     p05, p50, p95 = np.percentile(d, [5, 50, 95])
     if (p95 - p05) / max(1.0, p50) <= 0.16:
         return ("oval", 0.0)

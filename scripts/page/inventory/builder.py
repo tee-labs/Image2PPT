@@ -311,6 +311,20 @@ class InventoryBuilder:
             o_area = max(1, (ox2 - ox1) * (oy2 - oy1))
             if min(c_area, o_area) / max(c_area, o_area) >= 0.55:
                 return True
+        # Same for a comparable-size FOREGROUND record: it owns the
+        # region and classifies on the child-inpainted cleaned view,
+        # where the lift succeeds. Replacing it with an internal record
+        # reroutes classification to the source view, where lifted
+        # children are still visible and every uniformity gate fails
+        # (pale card + icon regressed to a flattened PNG that way).
+        for fx1, fy1, fx2, fy2 in [_box4(r) for r in self.foreground_records]:
+            if self._box_overlap_ratio(
+                    (ix1, iy1, ix2, iy2), (fx1, fy1, fx2, fy2)) < 0.5:
+                continue
+            c_area = max(1, (ix2 - ix1) * (iy2 - iy1))
+            f_area = max(1, (fx2 - fx1) * (fy2 - fy1))
+            if min(c_area, f_area) / max(c_area, f_area) >= 0.55:
+                return True
         return False
 
     @staticmethod
@@ -767,9 +781,16 @@ class InventoryBuilder:
     def build_and_write(self) -> None:
         self._emit_text_entries()
         self._detect_visual_components()
+        # Drop outline records duplicated by full crops BEFORE the
+        # whole-page primitive scan: _shape_box_already_covered treats a
+        # live outline record as covering the same region, so an outline
+        # that is itself about to be dropped (duplicated by a foreground
+        # record) must not silently veto the internal-shape lift —
+        # otherwise both die and only the doomed container record
+        # survives as a flattened PNG (the header-band card case).
+        self._drop_outlines_duplicated_by_full_crop()
         self._scan_whole_page_primitives_inplace()
         self._drop_foregrounds_covered_by_shapes()
-        self._drop_outlines_duplicated_by_full_crop()
         self._inpaint_nested_foreground_in_parents()
         self._coverage_residual_pass()
         self._emit_image_entries()
