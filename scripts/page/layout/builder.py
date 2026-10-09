@@ -608,7 +608,12 @@ class LayoutBuilder:
         # as a flattened PNG. The classifier is its own safety valve —
         # photos, gradients and complex icons return None and fall
         # through to the unchanged PNG paths.
-        if (role not in {"outline", "background"}
+        # outline-role elements reach here only after
+        # classify_outline_ring returned None (a filled card is not a
+        # hollow ring); they get the same filled-shape lift instead of
+        # falling straight to the keep-full-crop PNG. Only the page
+        # background stays excluded.
+        if (role != "background"
                 and self._enable_native_outline):
             # Straight connectors/dividers become native line elements
             # (draggable, recolourable, dash/arrow preserved) instead of

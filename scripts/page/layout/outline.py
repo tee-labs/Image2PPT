@@ -1005,10 +1005,10 @@ def _vet_fill_colors(crop_bgr: np.ndarray, fg: np.ndarray,
     """Shared fill/line colour vetting for solid-primitive lifts.
 
     Accepts only one uniform ink colour with a clean interior: gradient
-    or multi-colour content, glyphs/photos baked inside the shape, and
-    ghost-pale fills without a crisp border all return None so the crop
-    stays on the pixel-perfect PNG path. Returns
-    ``(fill_hex, line_hex)``.
+    or multi-colour content and glyphs/photos baked inside the shape
+    return None so the crop stays on the pixel-perfect PNG path. A
+    ghost-pale fill is accepted borderless when no crisp border exists.
+    Returns ``(fill_hex, line_hex)``.
     """
     pixels = crop_bgr[fg].reshape(-1, 3)
     if len(pixels) < 24:
@@ -1081,7 +1081,12 @@ def _vet_fill_colors(crop_bgr: np.ndarray, fg: np.ndarray,
             line_bgr = bg.copy()
             line_hex = _bgr_to_hex(line_bgr)
         if not _border_like(line_bgr):
-            return None
+            # Borderless tint panel (#F5F7FA-class card): the fill is
+            # uniform and the geometry bands downstream still gate the
+            # lift, so emit borderless (self-coloured line reads as no
+            # border) instead of dropping the card to a flattened PNG.
+            line_bgr = fill_bgr
+            line_hex = _bgr_to_hex(fill_bgr)
     return fill_hex, line_hex
 
 
