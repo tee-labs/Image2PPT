@@ -711,7 +711,7 @@ class LayoutBuilder:
             if line_hit is None:
                 # L-shaped elbows: same native-line contract, three
                 # points instead of two.
-                line_hit = classify_elbow_line(cls_crop)
+                line_hit = classify_elbow_line(cls_crop, self.inpaint_scale)
             if line_hit is not None:
                 points_flat, line_hex, width_px, dash, arrow = line_hit
                 pts: list[int] = []

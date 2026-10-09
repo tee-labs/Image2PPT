@@ -431,6 +431,11 @@ def _arrow_axis_profile(filled: np.ndarray):
     h, w = filled.shape
     if min(h, w) < 24:
         return None
+    # Real block arrows stay within sane proportions; a FUSED chevron
+    # banner row (3 chevrons + connectors, ~12:1) matches the stem+tip
+    # profile and must not lift as one giant arrow.
+    if w / float(h) > 8.0:
+        return None
     col_h = filled.sum(axis=0).astype(np.int32)
     full = np.nonzero(col_h >= 0.85 * h)[0]
     if len(full) == 0:
@@ -1259,6 +1264,12 @@ def classify_connector_line(crop_bgr: np.ndarray, scale: float = 1.0):
     width_est = len(pts) / max(1.0, length)
     if length < min_len or width_est > max(6.0, 0.20 * length):
         return None
+    # Absolute thinness: real connector strokes are 1-8 px (720p).
+    # Fused banner/chevron rows are 60-120 px bars whose relative perp
+    # gate passes trivially (it scales with width_est) — they must not
+    # lift as lines and render with 100 px strokes and giant arrowheads.
+    if width_est > 14.0 * scale:
+        return None
     # Straightness is judged on the middle half of the axis: a large
     # arrowhead at one end inflates the whole-silhouette perp spread
     # (and with it width_est), while elbow bends sit mid-stroke and
@@ -1369,7 +1380,7 @@ def classify_connector_line(crop_bgr: np.ndarray, scale: float = 1.0):
             float(max(1.0, width_est)), dash, arrow)
 
 
-def classify_elbow_line(crop_bgr: np.ndarray):
+def classify_elbow_line(crop_bgr: np.ndarray, scale: float = 1.0):
     """Lift an L-shaped (single 90° bend) connector to a polyline.
 
     Straight strokes route through ``classify_connector_line``; an
@@ -1419,6 +1430,8 @@ def classify_elbow_line(crop_bgr: np.ndarray):
     stroke = fg_px / max(1.0, float(xs.max() - xs.min() + ys.max() - ys.min()))
     if stroke > 0.35 * min(h, w):
         return None  # thick blob, not a stroke
+    if stroke > 14.0 * scale:
+        return None  # absolute cap — see classify_connector_line
     tol = max(2, int(round(1.8 * stroke)))
 
     def _side_frac(top_side: bool, horizontal: bool) -> float:
