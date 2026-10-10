@@ -160,7 +160,13 @@ def run_easyocr(crop_path: Path) -> EnginePred:
     we concatenate texts and take the max conf — matches the way Paddle
     reports a single line per detection.
     """
-    reader = _get_easyocr()
+    try:
+        reader = _get_easyocr()
+    except ImportError:
+        # Environments without easyocr (the shipped Docker image by
+        # design) degrade to no-evidence instead of crashing the whole
+        # OCR stage — paddle + tesseract evidence still drive consensus.
+        return EnginePred("", 0.0)
     try:
         res = reader.readtext(str(crop_path), detail=1)
     except Exception:
