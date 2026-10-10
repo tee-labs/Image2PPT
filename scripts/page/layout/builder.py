@@ -20,7 +20,10 @@ for _p in (PAGE_DIR, SCRIPTS_ROOT):
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 
-from shared.bg_sample import estimate_canvas_hex  # noqa: E402
+from shared.bg_sample import (
+    estimate_canvas_bgr as _estimate_canvas_bgr,
+    estimate_canvas_hex,
+)  # noqa: E402
 from shared.geometry import connector_on_container_border  # noqa: E402
 from icon import inpaint_region_inplace  # noqa: E402
 from text_safety import ppt_safe_text  # noqa: E402
@@ -207,7 +210,13 @@ class LayoutBuilder:
                 continue
             cx1, cy1, cx2, cy2 = (int(v) for v in child["bbox"])
             c_area = max(1, (cx2 - cx1) * (cy2 - cy1))
-            if c_area >= p_area * 0.55:
+            # A colour-region child that LIFTED to a native shape must be
+            # erased from the parent asset at almost any size — leaving a
+            # near-copy baked in the container puts a ghost under the
+            # movable shape. Only a near-total (≥92%) overlap means the
+            # child IS the parent.
+            cap = 0.92 if role == "region" else 0.55
+            if c_area >= p_area * cap:
                 continue
             cw, ch = cx2 - cx1, cy2 - cy1
             if (
@@ -743,6 +752,31 @@ class LayoutBuilder:
                 and min(original_w, original_h)
                 < max(18.0, 18.0 * self.inpaint_scale)):
             return
+        # Background/container PNG fallback: once the element's content
+        # has lifted to native shapes, the inpainted leftovers are a
+        # near-blank tinted sheet. The generic empty check measures
+        # against WHITE and a tinted canvas defeats it, so an empty
+        # container PNG would still emit — the "big background + shapes
+        # layer" effect. Measure against the PAGE canvas (crop corners
+        # would invert for a full-bleed element: its own colour would
+        # sample as the canvas and read as zero ink) and drop the
+        # element when only specks remain. This runs AFTER the shape
+        # classifiers: a pale panel that lifts as a round_rect never
+        # reaches it; only the flattening-PNG fate is vetoed.
+        if role in {"background", "container"}:
+            ch, cw = crop.shape[:2]
+            canvas = _estimate_canvas_bgr(self.source).astype(np.int16)
+            ink = (np.abs(crop.astype(np.int16) - canvas[None, None])
+                   .max(axis=2) > 16)
+            if float(ink.mean()) < 0.015:
+                n_lab, _lab, stats_i, _ = cv2.connectedComponentsWithStats(
+                    ink.astype(np.uint8), 8)
+                biggest = 0
+                for i in range(1, n_lab):
+                    biggest = max(
+                        biggest, int(stats_i[i, cv2.CC_STAT_AREA]))
+                if biggest < 0.005 * ch * cw:
+                    return
         if has_mask and not keep_outline_full_crop:
             if self._emit_masked_image(el, asset_name, mask_path, src_img,
                                        crop, contained_outline_boxes,
